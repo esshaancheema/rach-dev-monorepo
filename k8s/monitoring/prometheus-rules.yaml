@@ -1,0 +1,281 @@
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: zoptal-rules
+  namespace: monitoring
+  labels:
+    team: zoptal
+    prometheus: kube-prometheus
+spec:
+  groups:
+  - name: zoptal.rules
+    interval: 30s
+    rules:
+    
+    # Service Level Indicators (SLIs)
+    - record: zoptal:sli:request_rate
+      expr: sum(rate(http_requests_total{namespace="zoptal"}[5m])) by (service)
+      
+    - record: zoptal:sli:error_rate
+      expr: |
+        sum(rate(http_requests_total{namespace="zoptal",status=~"5.."}[5m])) by (service) /
+        sum(rate(http_requests_total{namespace="zoptal"}[5m])) by (service)
+        
+    - record: zoptal:sli:response_time_p95
+      expr: |
+        histogram_quantile(0.95,
+          sum(rate(http_request_duration_seconds_bucket{namespace="zoptal"}[5m])) by (service, le)
+        )
+        
+    - record: zoptal:sli:response_time_p99
+      expr: |
+        histogram_quantile(0.99,
+          sum(rate(http_request_duration_seconds_bucket{namespace="zoptal"}[5m])) by (service, le)
+        )
+
+  - name: zoptal.alerts
+    interval: 30s
+    rules:
+    
+    # High Error Rate Alert
+    - alert: HighErrorRate
+      expr: zoptal:sli:error_rate > 0.05
+      for: 5m
+      labels:
+        severity: critical
+        team: zoptal
+      annotations:
+        summary: "High error rate detected for {{ $labels.service }}"
+        description: "Error rate for {{ $labels.service }} is {{ $value | humanizePercentage }} for the last 5 minutes"
+        runbook_url: "https://runbooks.zoptal.com/alerts/high-error-rate"
+        
+    # High Response Time Alert
+    - alert: HighResponseTime
+      expr: zoptal:sli:response_time_p95 > 1
+      for: 10m
+      labels:
+        severity: warning
+        team: zoptal
+      annotations:
+        summary: "High response time detected for {{ $labels.service }}"
+        description: "95th percentile response time for {{ $labels.service }} is {{ $value }}s for the last 10 minutes"
+        runbook_url: "https://runbooks.zoptal.com/alerts/high-response-time"
+        
+    # Service Down Alert
+    - alert: ServiceDown
+      expr: up{namespace="zoptal"} == 0
+      for: 2m
+      labels:
+        severity: critical
+        team: zoptal
+      annotations:
+        summary: "Service {{ $labels.service }} is down"
+        description: "Service {{ $labels.service }} has been down for more than 2 minutes"
+        runbook_url: "https://runbooks.zoptal.com/alerts/service-down"
+        
+    # Low Request Rate Alert (possible service issue)
+    - alert: LowRequestRate
+      expr: zoptal:sli:request_rate < 1
+      for: 15m
+      labels:
+        severity: warning
+        team: zoptal
+      annotations:
+        summary: "Low request rate for {{ $labels.service }}"
+        description: "Request rate for {{ $labels.service }} is {{ $value }} req/sec for the last 15 minutes"
+        runbook_url: "https://runbooks.zoptal.com/alerts/low-request-rate"
+
+  - name: kubernetes.alerts
+    interval: 30s
+    rules:
+    
+    # Node Resource Alerts
+    - alert: NodeHighCPU
+      expr: 100 - (avg by (instance) (irate(node_cpu_seconds_total{mode="idle"}[5m])) * 100) > 80
+      for: 5m
+      labels:
+        severity: warning
+        team: platform
+      annotations:
+        summary: "High CPU usage on node {{ $labels.instance }}"
+        description: "CPU usage on node {{ $labels.instance }} is {{ $value }}%"
+        
+    - alert: NodeHighMemory
+      expr: (1 - (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes)) * 100 > 85
+      for: 5m
+      labels:
+        severity: warning
+        team: platform
+      annotations:
+        summary: "High memory usage on node {{ $labels.instance }}"
+        description: "Memory usage on node {{ $labels.instance }} is {{ $value }}%"
+        
+    - alert: NodeDiskSpaceLow
+      expr: (1 - (node_filesystem_avail_bytes / node_filesystem_size_bytes)) * 100 > 85
+      for: 5m
+      labels:
+        severity: warning
+        team: platform
+      annotations:
+        summary: "Low disk space on node {{ $labels.instance }}"
+        description: "Disk usage on {{ $labels.instance }} mount {{ $labels.mountpoint }} is {{ $value }}%"
+
+    # Pod Resource Alerts
+    - alert: PodHighCPU
+      expr: sum by (namespace, pod) (rate(container_cpu_usage_seconds_total{namespace="zoptal"}[5m])) > 0.8
+      for: 10m
+      labels:
+        severity: warning
+        team: zoptal
+      annotations:
+        summary: "High CPU usage in pod {{ $labels.namespace }}/{{ $labels.pod }}"
+        description: "CPU usage in pod {{ $labels.namespace }}/{{ $labels.pod }} is {{ $value }}"
+        
+    - alert: PodHighMemory
+      expr: |
+        sum by (namespace, pod) (container_memory_working_set_bytes{namespace="zoptal"}) /
+        sum by (namespace, pod) (container_spec_memory_limit_bytes{namespace="zoptal"}) > 0.8
+      for: 10m
+      labels:
+        severity: warning
+        team: zoptal
+      annotations:
+        summary: "High memory usage in pod {{ $labels.namespace }}/{{ $labels.pod }}"
+        description: "Memory usage in pod {{ $labels.namespace }}/{{ $labels.pod }} is {{ $value | humanizePercentage }}"
+        
+    # Pod Restart Alerts
+    - alert: PodCrashLooping
+      expr: rate(kube_pod_container_status_restarts_total{namespace="zoptal"}[15m]) > 0
+      for: 5m
+      labels:
+        severity: critical
+        team: zoptal
+      annotations:
+        summary: "Pod {{ $labels.namespace }}/{{ $labels.pod }} is crash looping"
+        description: "Pod {{ $labels.namespace }}/{{ $labels.pod }} has restarted {{ $value }} times in the last 15 minutes"
+
+  - name: database.alerts
+    interval: 30s
+    rules:
+    
+    # PostgreSQL Alerts
+    - alert: PostgreSQLDown
+      expr: pg_up == 0
+      for: 2m
+      labels:
+        severity: critical
+        team: database
+      annotations:
+        summary: "PostgreSQL is down"
+        description: "PostgreSQL database is down for more than 2 minutes"
+        
+    - alert: PostgreSQLHighConnections
+      expr: pg_stat_database_numbackends / pg_settings_max_connections > 0.8
+      for: 5m
+      labels:
+        severity: warning
+        team: database
+      annotations:
+        summary: "PostgreSQL has high number of connections"
+        description: "PostgreSQL connection usage is {{ $value | humanizePercentage }}"
+        
+    - alert: PostgreSQLSlowQueries
+      expr: pg_stat_activity_count{state="active"} > 5
+      for: 10m
+      labels:
+        severity: warning
+        team: database
+      annotations:
+        summary: "PostgreSQL has slow queries"
+        description: "PostgreSQL has {{ $value }} long-running queries"
+        
+    # Redis Alerts
+    - alert: RedisDown
+      expr: redis_up == 0
+      for: 2m
+      labels:
+        severity: critical
+        team: database
+      annotations:
+        summary: "Redis is down"
+        description: "Redis instance is down for more than 2 minutes"
+        
+    - alert: RedisHighMemoryUsage
+      expr: redis_memory_used_bytes / redis_memory_max_bytes > 0.8
+      for: 5m
+      labels:
+        severity: warning
+        team: database
+      annotations:
+        summary: "Redis high memory usage"
+        description: "Redis memory usage is {{ $value | humanizePercentage }}"
+        
+    - alert: RedisHighConnections
+      expr: redis_connected_clients > 100
+      for: 5m
+      labels:
+        severity: warning
+        team: database
+      annotations:
+        summary: "Redis high number of connections"
+        description: "Redis has {{ $value }} connected clients"
+
+  - name: business.alerts
+    interval: 60s
+    rules:
+    
+    # Business Logic Alerts
+    - alert: LowSignupRate
+      expr: sum(rate(user_signups_total[1h])) < 5
+      for: 30m
+      labels:
+        severity: warning
+        team: product
+      annotations:
+        summary: "Low user signup rate"
+        description: "User signup rate is {{ $value }} signups/hour for the last 30 minutes"
+        
+    - alert: HighAPIKeyUsage
+      expr: sum(rate(api_key_requests_total[5m])) by (api_key) > 100
+      for: 10m
+      labels:
+        severity: warning
+        team: product
+      annotations:
+        summary: "High API key usage detected"
+        description: "API key {{ $labels.api_key }} has {{ $value }} requests/sec"
+        
+    - alert: FailedPayments
+      expr: sum(rate(payment_failures_total[5m])) > 0.1
+      for: 5m
+      labels:
+        severity: critical
+        team: billing
+      annotations:
+        summary: "High payment failure rate"
+        description: "Payment failure rate is {{ $value }} failures/sec"
+
+  - name: security.alerts
+    interval: 30s
+    rules:
+    
+    # Security Alerts
+    - alert: UnauthorizedAccess
+      expr: sum(rate(http_requests_total{status="401"}[5m])) > 10
+      for: 2m
+      labels:
+        severity: warning
+        team: security
+      annotations:
+        summary: "High number of unauthorized access attempts"
+        description: "{{ $value }} unauthorized requests/sec detected"
+        
+    - alert: SuspiciousActivity
+      expr: sum(rate(http_requests_total{status="403"}[5m])) > 5
+      for: 5m
+      labels:
+        severity: warning
+        team: security
+      annotations:
+        summary: "Suspicious activity detected"
+        description: "{{ $value }} forbidden requests/sec detected"

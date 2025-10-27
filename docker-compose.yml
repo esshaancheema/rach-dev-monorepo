@@ -1,0 +1,306 @@
+version: '3.8'
+
+services:
+  # Database Services
+  postgres:
+    image: postgres:15-alpine
+    container_name: zoptal-postgres
+    environment:
+      POSTGRES_DB: zoptal
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    networks:
+      - zoptal-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: zoptal-redis
+    command: redis-server --appendonly yes
+    volumes:
+      - redis_data:/data
+    ports:
+      - "6379:6379"
+    networks:
+      - zoptal-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+
+  clickhouse:
+    image: clickhouse/clickhouse-server:23-alpine
+    container_name: zoptal-clickhouse
+    environment:
+      CLICKHOUSE_DB: analytics
+      CLICKHOUSE_USER: analytics
+      CLICKHOUSE_PASSWORD: analytics
+      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: 1
+    volumes:
+      - clickhouse_data:/var/lib/clickhouse
+      - ./services/analytics-service/clickhouse/init.sql:/docker-entrypoint-initdb.d/init.sql
+    ports:
+      - "8123:8123"
+      - "9000:9000"
+    networks:
+      - zoptal-network
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8123/ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+
+  # Backend Services
+  auth-service:
+    build:
+      context: .
+      dockerfile: services/auth-service/Dockerfile
+      target: development
+    container_name: zoptal-auth-service
+    environment:
+      NODE_ENV: development
+      PORT: 4001
+      DATABASE_URL: postgresql://postgres:postgres@postgres:5432/zoptal
+      REDIS_URL: redis://redis:6379
+      JWT_SECRET: your-super-secret-jwt-key-change-this-in-production
+      JWT_REFRESH_SECRET: your-super-secret-refresh-key-change-this-in-production
+      BCRYPT_ROUNDS: 12
+      EMAIL_FROM: noreply@zoptal.com
+      SENDGRID_API_KEY: ${SENDGRID_API_KEY}
+      TWILIO_ACCOUNT_SID: ${TWILIO_ACCOUNT_SID}
+      TWILIO_AUTH_TOKEN: ${TWILIO_AUTH_TOKEN}
+      TWILIO_PHONE_NUMBER: ${TWILIO_PHONE_NUMBER}
+      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID}
+      GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET}
+      GITHUB_CLIENT_ID: ${GITHUB_CLIENT_ID}
+      GITHUB_CLIENT_SECRET: ${GITHUB_CLIENT_SECRET}
+    volumes:
+      - ./services/auth-service:/app
+      - ./packages:/app/packages
+      - /app/node_modules
+    ports:
+      - "4001:4001"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - zoptal-network
+    restart: unless-stopped
+
+  project-service:
+    build:
+      context: .
+      dockerfile: services/project-service/Dockerfile
+      target: development
+    container_name: zoptal-project-service
+    environment:
+      NODE_ENV: development
+      PORT: 4002
+      DATABASE_URL: postgresql://postgres:postgres@postgres:5432/zoptal
+      REDIS_URL: redis://redis:6379
+      AUTH_SERVICE_URL: http://auth-service:4001
+      AI_SERVICE_URL: http://ai-service:4003
+      JWT_SECRET: your-super-secret-jwt-key-change-this-in-production
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY}
+      AWS_REGION: ${AWS_REGION}
+      AWS_S3_BUCKET: ${AWS_S3_BUCKET}
+      GITHUB_APP_ID: ${GITHUB_APP_ID}
+      GITHUB_PRIVATE_KEY: ${GITHUB_PRIVATE_KEY}
+      GITLAB_TOKEN: ${GITLAB_TOKEN}
+    volumes:
+      - ./services/project-service:/app
+      - ./packages:/app/packages
+      - /app/node_modules
+    ports:
+      - "4002:4002"
+    depends_on:
+      - postgres
+      - redis
+      - auth-service
+    networks:
+      - zoptal-network
+    restart: unless-stopped
+
+  ai-service:
+    build:
+      context: .
+      dockerfile: services/ai-service/Dockerfile
+      target: development
+    container_name: zoptal-ai-service
+    environment:
+      NODE_ENV: development
+      PORT: 4003
+      DATABASE_URL: postgresql://postgres:postgres@postgres:5432/zoptal
+      REDIS_URL: redis://redis:6379
+      AUTH_SERVICE_URL: http://auth-service:4001
+      JWT_SECRET: your-super-secret-jwt-key-change-this-in-production
+      OPENAI_API_KEY: ${OPENAI_API_KEY}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
+      GOOGLE_AI_API_KEY: ${GOOGLE_AI_API_KEY}
+      AZURE_OPENAI_ENDPOINT: ${AZURE_OPENAI_ENDPOINT}
+      AZURE_OPENAI_API_KEY: ${AZURE_OPENAI_API_KEY}
+    volumes:
+      - ./services/ai-service:/app
+      - ./packages:/app/packages
+      - /app/node_modules
+    ports:
+      - "4003:4003"
+    depends_on:
+      - postgres
+      - redis
+      - auth-service
+    networks:
+      - zoptal-network
+    restart: unless-stopped
+
+  billing-service:
+    build:
+      context: .
+      dockerfile: services/billing-service/Dockerfile
+      target: development
+    container_name: zoptal-billing-service
+    environment:
+      NODE_ENV: development
+      PORT: 4004
+      DATABASE_URL: postgresql://postgres:postgres@postgres:5432/zoptal
+      REDIS_URL: redis://redis:6379
+      AUTH_SERVICE_URL: http://auth-service:4001
+      JWT_SECRET: your-super-secret-jwt-key-change-this-in-production
+      STRIPE_SECRET_KEY: ${STRIPE_SECRET_KEY}
+      STRIPE_PUBLISHABLE_KEY: ${STRIPE_PUBLISHABLE_KEY}
+      STRIPE_WEBHOOK_SECRET: ${STRIPE_WEBHOOK_SECRET}
+      STRIPE_PRICE_API_REQUESTS: ${STRIPE_PRICE_API_REQUESTS}
+      STRIPE_PRICE_CODE_GENERATIONS: ${STRIPE_PRICE_CODE_GENERATIONS}
+    volumes:
+      - ./services/billing-service:/app
+      - ./packages:/app/packages
+      - /app/node_modules
+    ports:
+      - "4004:4004"
+    depends_on:
+      - postgres
+      - redis
+      - auth-service
+    networks:
+      - zoptal-network
+    restart: unless-stopped
+
+  notification-service:
+    build:
+      context: .
+      dockerfile: services/notification-service/Dockerfile
+      target: development
+    container_name: zoptal-notification-service
+    environment:
+      NODE_ENV: development
+      PORT: 4005
+      DATABASE_URL: postgresql://postgres:postgres@postgres:5432/zoptal
+      REDIS_URL: redis://redis:6379
+      AUTH_SERVICE_URL: http://auth-service:4001
+      JWT_SECRET: your-super-secret-jwt-key-change-this-in-production
+      SENDGRID_API_KEY: ${SENDGRID_API_KEY}
+      SMTP_HOST: ${SMTP_HOST}
+      SMTP_PORT: ${SMTP_PORT}
+      SMTP_USER: ${SMTP_USER}
+      SMTP_PASS: ${SMTP_PASS}
+      TWILIO_ACCOUNT_SID: ${TWILIO_ACCOUNT_SID}
+      TWILIO_AUTH_TOKEN: ${TWILIO_AUTH_TOKEN}
+      TWILIO_PHONE_NUMBER: ${TWILIO_PHONE_NUMBER}
+      VAPID_PUBLIC_KEY: ${VAPID_PUBLIC_KEY}
+      VAPID_PRIVATE_KEY: ${VAPID_PRIVATE_KEY}
+    volumes:
+      - ./services/notification-service:/app
+      - ./packages:/app/packages
+      - /app/node_modules
+    ports:
+      - "4005:4005"
+    depends_on:
+      - postgres
+      - redis
+      - auth-service
+    networks:
+      - zoptal-network
+    restart: unless-stopped
+
+  analytics-service:
+    build:
+      context: .
+      dockerfile: services/analytics-service/Dockerfile
+      target: development
+    container_name: zoptal-analytics-service
+    environment:
+      NODE_ENV: development
+      PORT: 4006
+      DATABASE_URL: postgresql://postgres:postgres@postgres:5432/zoptal
+      CLICKHOUSE_URL: http://clickhouse:8123
+      CLICKHOUSE_DATABASE: analytics
+      CLICKHOUSE_USER: analytics
+      CLICKHOUSE_PASSWORD: analytics
+      REDIS_URL: redis://redis:6379
+      AUTH_SERVICE_URL: http://auth-service:4001
+      JWT_SECRET: your-super-secret-jwt-key-change-this-in-production
+    volumes:
+      - ./services/analytics-service:/app
+      - ./packages:/app/packages
+      - /app/node_modules
+    ports:
+      - "4006:4006"
+    depends_on:
+      - postgres
+      - clickhouse
+      - redis
+      - auth-service
+    networks:
+      - zoptal-network
+    restart: unless-stopped
+
+  # Frontend Applications
+  web-main:
+    build:
+      context: .
+      dockerfile: apps/web-main/Dockerfile
+      target: development
+    container_name: zoptal-web-main
+    environment:
+      NODE_ENV: development
+      PORT: 3000
+      NEXT_PUBLIC_AUTH_SERVICE_URL: http://localhost:4001
+      NEXT_PUBLIC_API_BASE_URL: http://localhost:4001
+      NEXT_PUBLIC_SITE_URL: http://localhost:3000
+      NEXT_TELEMETRY_DISABLED: 1
+    volumes:
+      - ./apps/web-main:/app
+      - ./packages:/app/packages
+      - /app/node_modules
+      - /app/.next
+    ports:
+      - "3000:3000"
+    depends_on:
+      - auth-service
+    networks:
+      - zoptal-network
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+    driver: local
+  redis_data:
+    driver: local
+  clickhouse_data:
+    driver: local
+
+networks:
+  zoptal-network:
+    driver: bridge

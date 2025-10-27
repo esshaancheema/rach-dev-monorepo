@@ -1,0 +1,312 @@
+name: Security
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main, develop]
+  schedule:
+    - cron: '0 0 * * 1' # Weekly on Monday at midnight
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  security-events: write
+  actions: read
+
+jobs:
+  dependency-scan:
+    name: Dependency Scanning
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run npm audit
+        run: |
+          npm audit --production --audit-level=moderate > npm-audit-report.json || true
+          cat npm-audit-report.json
+
+      - name: Run Snyk scan
+        uses: snyk/actions/node@master
+        continue-on-error: true
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+        with:
+          args: --severity-threshold=high --json-file-output=snyk-report.json
+
+      - name: Upload Snyk results
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: snyk-report.sarif
+
+      - name: Check for critical vulnerabilities
+        run: |
+          if npm audit --production --audit-level=critical --json | jq -e '.metadata.vulnerabilities.critical > 0'; then
+            echo "Critical vulnerabilities found!"
+            exit 1
+          fi
+
+  codeql-analysis:
+    name: CodeQL Analysis
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        language: ['javascript', 'typescript']
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v3
+        with:
+          languages: ${{ matrix.language }}
+          queries: security-extended,security-and-quality
+
+      - name: Autobuild
+        uses: github/codeql-action/autobuild@v3
+
+      - name: Perform CodeQL Analysis
+        uses: github/codeql-action/analyze@v3
+        with:
+          category: "/language:${{ matrix.language }}"
+
+  secret-scanning:
+    name: Secret Scanning
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: TruffleHog scan
+        uses: trufflesecurity/trufflehog@main
+        with:
+          path: ./
+          base: ${{ github.event.repository.default_branch }}
+          head: HEAD
+          extra_args: --debug --only-verified
+
+      - name: GitLeaks scan
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITLEAKS_LICENSE: ${{ secrets.GITLEAKS_LICENSE }}
+
+  container-scan:
+    name: Container Security Scan
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        service:
+          - auth-service
+          - project-service
+          - ai-service
+          - notification-service
+          - analytics-service
+          - payment-service
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: ./services/${{ matrix.service }}
+          load: true
+          tags: zoptal/${{ matrix.service }}:scan
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Run Trivy vulnerability scanner
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: zoptal/${{ matrix.service }}:scan
+          format: 'sarif'
+          output: 'trivy-${{ matrix.service }}.sarif'
+          severity: 'CRITICAL,HIGH'
+          exit-code: '1'
+
+      - name: Upload Trivy scan results
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: 'trivy-${{ matrix.service }}.sarif'
+
+      - name: Run Grype scan
+        uses: anchore/scan-action@v3
+        with:
+          image: zoptal/${{ matrix.service }}:scan
+          fail-build: true
+          severity-cutoff: high
+
+  sast-scan:
+    name: SAST Scanning
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run ESLint security plugin
+        run: |
+          npm install --save-dev eslint-plugin-security
+          npx eslint . --ext .js,.jsx,.ts,.tsx --plugin security --rule 'security/detect-object-injection: error' --format json > eslint-security-report.json || true
+
+      - name: Run Semgrep
+        uses: returntocorp/semgrep-action@v1
+        with:
+          config: >-
+            p/security-audit
+            p/secrets
+            p/owasp-top-ten
+            p/typescript
+            p/nodejs
+
+      - name: Run NodeJsScan
+        uses: ajinabraham/njsscan-action@master
+        with:
+          args: '. --sarif --output njsscan.sarif || true'
+
+      - name: Upload SARIF
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: njsscan.sarif
+
+  license-check:
+    name: License Compliance Check
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Check licenses
+        run: |
+          npx license-checker --production --summary --failOn 'GPL-3.0;AGPL-3.0;LGPL-3.0' > license-report.txt
+          cat license-report.txt
+
+      - name: Upload license report
+        uses: actions/upload-artifact@v4
+        with:
+          name: license-report
+          path: license-report.txt
+          retention-days: 30
+
+  security-report:
+    name: Security Report
+    needs: [dependency-scan, codeql-analysis, secret-scanning, container-scan, sast-scan, license-check]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Generate security report
+        run: |
+          cat > security-summary.md << EOF
+          # Security Scan Summary
+          
+          ## Scan Results
+          
+          | Check | Status |
+          |-------|--------|
+          | Dependency Scan | ${{ needs.dependency-scan.result }} |
+          | CodeQL Analysis | ${{ needs.codeql-analysis.result }} |
+          | Secret Scanning | ${{ needs.secret-scanning.result }} |
+          | Container Scan | ${{ needs.container-scan.result }} |
+          | SAST Scan | ${{ needs.sast-scan.result }} |
+          | License Check | ${{ needs.license-check.result }} |
+          
+          ## Details
+          
+          - **Run ID**: ${{ github.run_id }}
+          - **Triggered by**: ${{ github.event_name }}
+          - **Branch**: ${{ github.ref }}
+          - **Commit**: ${{ github.sha }}
+          
+          EOF
+
+      - name: Upload security summary
+        uses: actions/upload-artifact@v4
+        with:
+          name: security-summary
+          path: security-summary.md
+          retention-days: 90
+
+      - name: Comment on PR
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const fs = require('fs');
+            const summary = fs.readFileSync('security-summary.md', 'utf8');
+            
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: summary
+            });
+
+      - name: Send security alert
+        if: |
+          needs.dependency-scan.result == 'failure' ||
+          needs.secret-scanning.result == 'failure' ||
+          needs.container-scan.result == 'failure'
+        uses: 8398a7/action-slack@v3
+        with:
+          status: custom
+          custom_payload: |
+            {
+              text: "Security vulnerabilities detected!",
+              attachments: [{
+                color: 'danger',
+                title: 'Security Scan Failed',
+                text: 'Critical security issues found. Please review the security report.',
+                fields: [
+                  {
+                    title: 'Repository',
+                    value: '${{ github.repository }}',
+                    short: true
+                  },
+                  {
+                    title: 'Branch',
+                    value: '${{ github.ref }}',
+                    short: true
+                  }
+                ]
+              }]
+            }
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_SECURITY_WEBHOOK }}

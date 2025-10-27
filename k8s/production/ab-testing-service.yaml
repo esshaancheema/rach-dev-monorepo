@@ -1,0 +1,314 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ab-testing-service
+  namespace: zoptal
+  labels:
+    app: ab-testing-service
+    component: backend
+    tier: application
+spec:
+  replicas: 3
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  selector:
+    matchLabels:
+      app: ab-testing-service
+  template:
+    metadata:
+      labels:
+        app: ab-testing-service
+        component: backend
+        tier: application
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "3004"
+        prometheus.io/path: "/metrics"
+    spec:
+      serviceAccountName: ab-testing-service
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1001
+        fsGroup: 1001
+      containers:
+      - name: ab-testing-service
+        image: zoptal/ab-testing-service:latest
+        imagePullPolicy: Always
+        ports:
+        - containerPort: 3004
+          name: http
+          protocol: TCP
+        env:
+        - name: NODE_ENV
+          value: "production"
+        - name: PORT
+          value: "3004"
+        - name: REDIS_HOST
+          value: "redis-cluster"
+        - name: REDIS_PORT
+          value: "6379"
+        - name: REDIS_DB
+          value: "2"
+        - name: REDIS_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: redis-secret
+              key: password
+        - name: JWT_SECRET
+          valueFrom:
+            secretKeyRef:
+              name: ab-testing-secrets
+              key: jwt-secret
+        - name: LOG_LEVEL
+          value: "info"
+        - name: CORS_ORIGINS
+          value: "https://app.zoptal.com,https://admin.zoptal.com"
+        - name: RATE_LIMIT_WINDOW_MS
+          value: "900000"
+        - name: RATE_LIMIT_MAX
+          value: "1000"
+        - name: FEATURE_FLAGS_MAX_FLAGS
+          value: "5000"
+        - name: FEATURE_FLAGS_CACHE_TTL
+          value: "3600"
+        - name: EXPERIMENTS_MAX_EXPERIMENTS
+          value: "2000"
+        - name: METRICS_RETENTION_DAYS
+          value: "365"
+        resources:
+          requests:
+            memory: "256Mi"
+            cpu: "100m"
+          limits:
+            memory: "512Mi"
+            cpu: "500m"
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 3004
+            scheme: HTTP
+          initialDelaySeconds: 30
+          periodSeconds: 30
+          timeoutSeconds: 5
+          failureThreshold: 3
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 3004
+            scheme: HTTP
+          initialDelaySeconds: 10
+          periodSeconds: 10
+          timeoutSeconds: 3
+          failureThreshold: 3
+          successThreshold: 1
+        volumeMounts:
+        - name: logs
+          mountPath: /app/logs
+        - name: config
+          mountPath: /app/config
+          readOnly: true
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
+          readOnlyRootFilesystem: true
+      volumes:
+      - name: logs
+        emptyDir: {}
+      - name: config
+        configMap:
+          name: ab-testing-config
+      initContainers:
+      - name: wait-for-redis
+        image: busybox:1.35
+        command: ['sh', '-c']
+        args:
+        - |
+          until nc -z redis-cluster 6379; do
+            echo "Waiting for Redis..."
+            sleep 2
+          done
+          echo "Redis is ready!"
+        securityContext:
+          runAsNonRoot: true
+          runAsUser: 1001
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
+          readOnlyRootFilesystem: true
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ab-testing-service
+  namespace: zoptal
+  labels:
+    app: ab-testing-service
+  annotations:
+    prometheus.io/scrape: "true"
+    prometheus.io/port: "3004"
+    prometheus.io/path: "/metrics"
+spec:
+  type: ClusterIP
+  ports:
+  - port: 80
+    targetPort: 3004
+    protocol: TCP
+    name: http
+  selector:
+    app: ab-testing-service
+
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: ab-testing-service
+  namespace: zoptal
+
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ab-testing-config
+  namespace: zoptal
+data:
+  app.json: |
+    {
+      "service": "ab-testing-service",
+      "version": "1.0.0",
+      "features": {
+        "experimentLimit": 2000,
+        "flagLimit": 5000,
+        "metricsRetention": 365,
+        "analyticsEnabled": true,
+        "statisticalTesting": true
+      },
+      "cache": {
+        "ttl": 3600,
+        "maxMemory": "100mb"
+      },
+      "monitoring": {
+        "metricsEnabled": true,
+        "tracingEnabled": true,
+        "logLevel": "info"
+      }
+    }
+
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: ab-testing-secrets
+  namespace: zoptal
+type: Opaque
+data:
+  jwt-secret: eW91ci1zdXBlci1zZWNyZXQtand0LWtleS1oZXJlLWZvci1wcm9kdWN0aW9u # Base64 encoded
+
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: ab-testing-service-ingress
+  namespace: zoptal
+  annotations:
+    kubernetes.io/ingress.class: "nginx"
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/force-ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/cors-allow-origin: "https://app.zoptal.com,https://admin.zoptal.com"
+    nginx.ingress.kubernetes.io/cors-allow-methods: "GET, POST, PUT, DELETE, OPTIONS"
+    nginx.ingress.kubernetes.io/cors-allow-headers: "Content-Type, Authorization, X-Requested-With"
+    nginx.ingress.kubernetes.io/rate-limit: "1000"
+    nginx.ingress.kubernetes.io/rate-limit-window: "1m"
+    cert-manager.io/cluster-issuer: "letsencrypt-prod"
+spec:
+  tls:
+  - hosts:
+    - ab-testing.zoptal.com
+    secretName: ab-testing-tls-secret
+  rules:
+  - host: ab-testing.zoptal.com
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: ab-testing-service
+            port:
+              number: 80
+
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: ab-testing-service-hpa
+  namespace: zoptal
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: ab-testing-service
+  minReplicas: 3
+  maxReplicas: 20
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 70
+  - type: Resource
+    resource:
+      name: memory
+      target:
+        type: Utilization
+        averageUtilization: 80
+  behavior:
+    scaleUp:
+      stabilizationWindowSeconds: 60
+      policies:
+      - type: Percent
+        value: 50
+        periodSeconds: 60
+    scaleDown:
+      stabilizationWindowSeconds: 300
+      policies:
+      - type: Percent
+        value: 10
+        periodSeconds: 60
+
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: ab-testing-service-pdb
+  namespace: zoptal
+spec:
+  minAvailable: 2
+  selector:
+    matchLabels:
+      app: ab-testing-service
+
+---
+apiVersion: v1
+kind: ServiceMonitor
+metadata:
+  name: ab-testing-service-monitor
+  namespace: zoptal
+  labels:
+    app: ab-testing-service
+spec:
+  selector:
+    matchLabels:
+      app: ab-testing-service
+  endpoints:
+  - port: http
+    path: /metrics
+    interval: 30s
+    scrapeTimeout: 10s

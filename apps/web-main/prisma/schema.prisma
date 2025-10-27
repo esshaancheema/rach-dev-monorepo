@@ -1,0 +1,134 @@
+// Prisma schema for Zoptal authentication system
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// User model
+model User {
+  id                String    @id @default(cuid())
+  email             String    @unique
+  firstName         String?
+  lastName          String?
+  password          String
+  emailVerified     Boolean   @default(false)
+  emailVerifyToken  String?   @unique
+  phoneNumber       String?
+  phoneVerified     Boolean   @default(false)
+  avatar            String?
+  role              Role      @default(USER)
+  isActive          Boolean   @default(true)
+  twoFactorEnabled  Boolean   @default(false)
+  twoFactorSecret   String?
+  backupCodes       String[]
+  lastLoginAt       DateTime?
+  lastLoginIp       String?
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+  
+  // Relations
+  sessions          Session[]
+  passwordResets    PasswordReset[]
+  loginAttempts     LoginAttempt[]
+  oauthAccounts     OAuthAccount[]
+  preferences       UserPreference?
+  
+  @@index([email])
+  @@index([emailVerifyToken])
+}
+
+// Session model for JWT refresh tokens
+model Session {
+  id                String   @id @default(cuid())
+  userId            String
+  user              User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  refreshToken      String   @unique
+  deviceInfo        String?
+  ipAddress         String?
+  userAgent         String?
+  expiresAt         DateTime
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+  
+  @@index([userId])
+  @@index([refreshToken])
+}
+
+// Password reset tokens
+model PasswordReset {
+  id                String   @id @default(cuid())
+  userId            String
+  user              User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  token             String   @unique
+  expiresAt         DateTime
+  usedAt            DateTime?
+  createdAt         DateTime @default(now())
+  
+  @@index([token])
+  @@index([userId])
+}
+
+// Login attempts for rate limiting
+model LoginAttempt {
+  id                String   @id @default(cuid())
+  email             String
+  userId            String?
+  user              User?    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  ipAddress         String
+  userAgent         String?
+  success           Boolean
+  failureReason     String?
+  attemptedAt       DateTime @default(now())
+  
+  @@index([email])
+  @@index([ipAddress])
+  @@index([attemptedAt])
+}
+
+// OAuth accounts
+model OAuthAccount {
+  id                String   @id @default(cuid())
+  userId            String
+  user              User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  provider          String   // google, github, etc.
+  providerAccountId String
+  accessToken       String?
+  refreshToken      String?
+  expiresAt         DateTime?
+  tokenType         String?
+  scope             String?
+  idToken           String?
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+  
+  @@unique([provider, providerAccountId])
+  @@index([userId])
+}
+
+// User preferences
+model UserPreference {
+  id                String   @id @default(cuid())
+  userId            String   @unique
+  user              User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  theme             String   @default("light")
+  language          String   @default("en")
+  timezone          String   @default("UTC")
+  emailNotifications Boolean @default(true)
+  pushNotifications Boolean  @default(false)
+  marketingEmails   Boolean  @default(false)
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+}
+
+// User roles enum
+enum Role {
+  USER
+  ADMIN
+  MODERATOR
+  DEVELOPER
+}

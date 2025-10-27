@@ -1,0 +1,349 @@
+version: '3.8'
+
+services:
+  # Frontend Applications
+  admin:
+    build:
+      context: ./apps/admin
+      dockerfile: Dockerfile
+      args:
+        NODE_ENV: production
+    container_name: zoptal-admin
+    ports:
+      - "3001:3000"
+    environment:
+      - NODE_ENV=production
+      - NEXT_PUBLIC_API_URL=https://api.zoptal.com
+      - NEXT_PUBLIC_AUTH_URL=https://auth.zoptal.com
+    depends_on:
+      - auth-service
+      - project-service
+    networks:
+      - zoptal-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: '0.5'
+        reservations:
+          memory: 256M
+          cpus: '0.25'
+
+  web-main:
+    build:
+      context: ./apps/web-main
+      dockerfile: Dockerfile
+      args:
+        NODE_ENV: production
+    container_name: zoptal-web-main
+    ports:
+      - "3002:3000"
+    environment:
+      - NODE_ENV=production
+      - NEXT_PUBLIC_API_URL=https://api.zoptal.com
+      - NEXT_PUBLIC_AUTH_URL=https://auth.zoptal.com
+      - CONTENTFUL_SPACE_ID=${CONTENTFUL_SPACE_ID}
+      - CONTENTFUL_ACCESS_TOKEN=${CONTENTFUL_ACCESS_TOKEN}
+      - NEXT_PUBLIC_GA_ID=${NEXT_PUBLIC_GA_ID}
+    networks:
+      - zoptal-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: '0.5'
+        reservations:
+          memory: 256M
+          cpus: '0.25'
+
+  # Backend Services
+  auth-service:
+    build:
+      context: ./services/auth-service
+      dockerfile: Dockerfile
+    container_name: zoptal-auth-service
+    ports:
+      - "4001:4001"
+    environment:
+      - NODE_ENV=production
+      - PORT=4001
+      - DATABASE_URL=${AUTH_DATABASE_URL}
+      - REDIS_URL=${REDIS_URL}
+      - JWT_SECRET=${JWT_SECRET}
+      - JWT_REFRESH_SECRET=${JWT_REFRESH_SECRET}
+      - SMTP_HOST=${SMTP_HOST}
+      - SMTP_PORT=${SMTP_PORT}
+      - SMTP_USER=${SMTP_USER}
+      - SMTP_PASS=${SMTP_PASS}
+      - GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID}
+      - GOOGLE_CLIENT_SECRET=${GOOGLE_CLIENT_SECRET}
+      - GITHUB_CLIENT_ID=${GITHUB_CLIENT_ID}
+      - GITHUB_CLIENT_SECRET=${GITHUB_CLIENT_SECRET}
+      - TWILIO_ACCOUNT_SID=${TWILIO_ACCOUNT_SID}
+      - TWILIO_AUTH_TOKEN=${TWILIO_AUTH_TOKEN}
+      - RATE_LIMIT_WINDOW=15m
+      - RATE_LIMIT_MAX_REQUESTS=100
+    depends_on:
+      - postgres
+      - redis
+    networks:
+      - zoptal-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:4001/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: '0.5'
+        reservations:
+          memory: 256M
+          cpus: '0.25'
+
+  project-service:
+    build:
+      context: .
+      dockerfile: services/project-service/Dockerfile
+      target: production
+    container_name: zoptal-project-service-prod
+    environment:
+      NODE_ENV: production
+      PORT: 4002
+      DATABASE_URL: ${DATABASE_URL}
+      REDIS_URL: ${REDIS_URL}
+      AUTH_SERVICE_URL: http://auth-service:4001
+      AI_SERVICE_URL: http://ai-service:4003
+      JWT_SECRET: ${JWT_SECRET}
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY}
+      AWS_REGION: ${AWS_REGION}
+      AWS_S3_BUCKET: ${AWS_S3_BUCKET}
+      GITHUB_APP_ID: ${GITHUB_APP_ID}
+      GITHUB_PRIVATE_KEY: ${GITHUB_PRIVATE_KEY}
+      GITLAB_TOKEN: ${GITLAB_TOKEN}
+    ports:
+      - "4002:4002"
+    depends_on:
+      - auth-service
+    networks:
+      - zoptal-network
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+          cpus: '1.0'
+        reservations:
+          memory: 512M
+          cpus: '0.5'
+
+  ai-service:
+    build:
+      context: .
+      dockerfile: services/ai-service/Dockerfile
+      target: production
+    container_name: zoptal-ai-service-prod
+    environment:
+      NODE_ENV: production
+      PORT: 4003
+      DATABASE_URL: ${DATABASE_URL}
+      REDIS_URL: ${REDIS_URL}
+      AUTH_SERVICE_URL: http://auth-service:4001
+      JWT_SECRET: ${JWT_SECRET}
+      OPENAI_API_KEY: ${OPENAI_API_KEY}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
+      GOOGLE_AI_API_KEY: ${GOOGLE_AI_API_KEY}
+      AZURE_OPENAI_ENDPOINT: ${AZURE_OPENAI_ENDPOINT}
+      AZURE_OPENAI_API_KEY: ${AZURE_OPENAI_API_KEY}
+    ports:
+      - "4003:4003"
+    depends_on:
+      - auth-service
+    networks:
+      - zoptal-network
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+          cpus: '1.0'
+        reservations:
+          memory: 512M
+          cpus: '0.5'
+
+  billing-service:
+    build:
+      context: .
+      dockerfile: services/billing-service/Dockerfile
+      target: production
+    container_name: zoptal-billing-service-prod
+    environment:
+      NODE_ENV: production
+      PORT: 4004
+      DATABASE_URL: ${DATABASE_URL}
+      REDIS_URL: ${REDIS_URL}
+      AUTH_SERVICE_URL: http://auth-service:4001
+      JWT_SECRET: ${JWT_SECRET}
+      STRIPE_SECRET_KEY: ${STRIPE_SECRET_KEY}
+      STRIPE_PUBLISHABLE_KEY: ${STRIPE_PUBLISHABLE_KEY}
+      STRIPE_WEBHOOK_SECRET: ${STRIPE_WEBHOOK_SECRET}
+      STRIPE_PRICE_API_REQUESTS: ${STRIPE_PRICE_API_REQUESTS}
+      STRIPE_PRICE_CODE_GENERATIONS: ${STRIPE_PRICE_CODE_GENERATIONS}
+    ports:
+      - "4004:4004"
+    depends_on:
+      - auth-service
+    networks:
+      - zoptal-network
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: '0.5'
+        reservations:
+          memory: 256M
+          cpus: '0.25'
+
+  notification-service:
+    build:
+      context: .
+      dockerfile: services/notification-service/Dockerfile
+      target: production
+    container_name: zoptal-notification-service-prod
+    environment:
+      NODE_ENV: production
+      PORT: 4005
+      DATABASE_URL: ${DATABASE_URL}
+      REDIS_URL: ${REDIS_URL}
+      AUTH_SERVICE_URL: http://auth-service:4001
+      JWT_SECRET: ${JWT_SECRET}
+      SENDGRID_API_KEY: ${SENDGRID_API_KEY}
+      SMTP_HOST: ${SMTP_HOST}
+      SMTP_PORT: ${SMTP_PORT}
+      SMTP_USER: ${SMTP_USER}
+      SMTP_PASS: ${SMTP_PASS}
+      TWILIO_ACCOUNT_SID: ${TWILIO_ACCOUNT_SID}
+      TWILIO_AUTH_TOKEN: ${TWILIO_AUTH_TOKEN}
+      TWILIO_PHONE_NUMBER: ${TWILIO_PHONE_NUMBER}
+      VAPID_PUBLIC_KEY: ${VAPID_PUBLIC_KEY}
+      VAPID_PRIVATE_KEY: ${VAPID_PRIVATE_KEY}
+    ports:
+      - "4005:4005"
+    depends_on:
+      - auth-service
+    networks:
+      - zoptal-network
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: '0.5'
+        reservations:
+          memory: 256M
+          cpus: '0.25'
+
+  analytics-service:
+    build:
+      context: .
+      dockerfile: services/analytics-service/Dockerfile
+      target: production
+    container_name: zoptal-analytics-service-prod
+    environment:
+      NODE_ENV: production
+      PORT: 4006
+      DATABASE_URL: ${DATABASE_URL}
+      CLICKHOUSE_URL: ${CLICKHOUSE_URL}
+      CLICKHOUSE_DATABASE: ${CLICKHOUSE_DATABASE}
+      CLICKHOUSE_USER: ${CLICKHOUSE_USER}
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD}
+      REDIS_URL: ${REDIS_URL}
+      AUTH_SERVICE_URL: http://auth-service:4001
+      JWT_SECRET: ${JWT_SECRET}
+    ports:
+      - "4006:4006"
+    depends_on:
+      - auth-service
+    networks:
+      - zoptal-network
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+          cpus: '1.0'
+        reservations:
+          memory: 512M
+          cpus: '0.5'
+
+  # Frontend Applications (Production)
+  web-main:
+    build:
+      context: .
+      dockerfile: apps/web-main/Dockerfile
+      target: production
+    container_name: zoptal-web-main-prod
+    environment:
+      NODE_ENV: production
+      PORT: 3000
+      NEXT_PUBLIC_AUTH_SERVICE_URL: ${NEXT_PUBLIC_AUTH_SERVICE_URL}
+      NEXT_PUBLIC_API_BASE_URL: ${NEXT_PUBLIC_API_BASE_URL}
+      NEXT_PUBLIC_SITE_URL: ${NEXT_PUBLIC_SITE_URL}
+      NEXT_TELEMETRY_DISABLED: 1
+    ports:
+      - "3000:3000"
+    depends_on:
+      - auth-service
+    networks:
+      - zoptal-network
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: '0.5'
+        reservations:
+          memory: 256M
+          cpus: '0.25'
+
+  # Reverse Proxy (Production)
+  nginx:
+    image: nginx:alpine
+    container_name: zoptal-nginx
+    volumes:
+      - ./infrastructure/nginx/nginx.conf:/etc/nginx/nginx.conf
+      - ./infrastructure/nginx/ssl:/etc/nginx/ssl
+    ports:
+      - "80:80"
+      - "443:443"
+    depends_on:
+      - web-main
+      - auth-service
+      - project-service
+      - ai-service
+      - billing-service
+      - notification-service
+      - analytics-service
+    networks:
+      - zoptal-network
+    restart: unless-stopped
+
+networks:
+  zoptal-network:
+    driver: bridge

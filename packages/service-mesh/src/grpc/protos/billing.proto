@@ -1,0 +1,172 @@
+syntax = "proto3";
+
+package zoptal.billing.v1;
+
+option go_package = "github.com/zoptal/service-mesh/gen/go/billing/v1";
+
+import "google/protobuf/timestamp.proto";
+import "google/protobuf/empty.proto";
+
+// Billing Service - Internal gRPC API
+service BillingService {
+  // Get user subscription
+  rpc GetUserSubscription(GetUserSubscriptionRequest) returns (GetUserSubscriptionResponse);
+  
+  // Check subscription limits
+  rpc CheckSubscriptionLimits(CheckSubscriptionLimitsRequest) returns (CheckSubscriptionLimitsResponse);
+  
+  // Record usage for billing
+  rpc RecordUsage(RecordUsageRequest) returns (RecordUsageResponse);
+  
+  // Get subscription plans
+  rpc GetSubscriptionPlans(GetSubscriptionPlansRequest) returns (GetSubscriptionPlansResponse);
+  
+  // Validate payment method
+  rpc ValidatePaymentMethod(ValidatePaymentMethodRequest) returns (ValidatePaymentMethodResponse);
+  
+  // Health check
+  rpc HealthCheck(google.protobuf.Empty) returns (HealthCheckResponse);
+}
+
+// Subscription retrieval
+message GetUserSubscriptionRequest {
+  string user_id = 1;
+}
+
+message GetUserSubscriptionResponse {
+  Subscription subscription = 1;
+  string error_message = 2;
+}
+
+// Subscription limits checking
+message CheckSubscriptionLimitsRequest {
+  string user_id = 1;
+  string resource_type = 2; // projects, storage, bandwidth, api_calls
+  int64 requested_amount = 3;
+}
+
+message CheckSubscriptionLimitsResponse {
+  bool allowed = 1;
+  int64 current_usage = 2;
+  int64 limit = 3;
+  int64 remaining = 4;
+  string error_message = 5;
+}
+
+// Usage recording
+message RecordUsageRequest {
+  string user_id = 1;
+  string resource_type = 2;
+  int64 amount = 3;
+  string description = 4;
+  google.protobuf.Timestamp timestamp = 5;
+}
+
+message RecordUsageResponse {
+  bool success = 1;
+  int64 total_usage = 2;
+  string error_message = 3;
+}
+
+// Plans retrieval
+message GetSubscriptionPlansRequest {
+  bool active_only = 1;
+}
+
+message GetSubscriptionPlansResponse {
+  repeated SubscriptionPlan plans = 1;
+  string error_message = 2;
+}
+
+// Payment validation
+message ValidatePaymentMethodRequest {
+  string user_id = 1;
+  string payment_method_id = 2;
+}
+
+message ValidatePaymentMethodResponse {
+  bool valid = 1;
+  PaymentMethod payment_method = 2;
+  string error_message = 3;
+}
+
+// Data models
+message Subscription {
+  string id = 1;
+  string user_id = 2;
+  string plan_id = 3;
+  SubscriptionStatus status = 4;
+  string stripe_subscription_id = 5;
+  string stripe_customer_id = 6;
+  google.protobuf.Timestamp current_period_start = 7;
+  google.protobuf.Timestamp current_period_end = 8;
+  google.protobuf.Timestamp created_at = 9;
+  google.protobuf.Timestamp updated_at = 10;
+  SubscriptionPlan plan = 11;
+}
+
+message SubscriptionPlan {
+  string id = 1;
+  string name = 2;
+  string description = 3;
+  int64 price = 4; // in cents
+  string interval = 5; // monthly, yearly
+  PlanFeatures features = 6;
+  PlanLimits limits = 7;
+  bool active = 8;
+}
+
+message PlanFeatures {
+  int32 projects = 1;
+  string storage = 2;
+  string bandwidth = 3;
+  bool custom_domain = 4;
+  bool analytics = 5;
+  string support = 6;
+}
+
+message PlanLimits {
+  int32 projects = 1;
+  int64 storage = 2; // in bytes, -1 for unlimited
+  int64 bandwidth = 3; // in bytes, -1 for unlimited
+  int64 api_calls = 4; // per month, -1 for unlimited
+}
+
+enum SubscriptionStatus {
+  SUBSCRIPTION_STATUS_UNSPECIFIED = 0;
+  ACTIVE = 1;
+  CANCELED = 2;
+  PAST_DUE = 3;
+  UNPAID = 4;
+  INCOMPLETE = 5;
+  INCOMPLETE_EXPIRED = 6;
+  TRIALING = 7;
+}
+
+message PaymentMethod {
+  string id = 1;
+  string type = 2; // card, bank_account
+  CardDetails card = 3;
+  bool default = 4;
+  google.protobuf.Timestamp created_at = 5;
+}
+
+message CardDetails {
+  string brand = 1;
+  string last4 = 2;
+  int32 exp_month = 3;
+  int32 exp_year = 4;
+  string country = 5;
+}
+
+// Health check
+message HealthCheckResponse {
+  enum Status {
+    UNKNOWN = 0;
+    SERVING = 1;
+    NOT_SERVING = 2;
+    SERVICE_UNKNOWN = 3;
+  }
+  Status status = 1;
+  string message = 2;
+}

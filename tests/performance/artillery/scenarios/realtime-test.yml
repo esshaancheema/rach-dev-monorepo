@@ -1,0 +1,565 @@
+# Artillery Real-time Features Performance Testing
+# Tests all real-time features: collaboration, chat, notifications, AI streaming
+
+config:
+  target: 'ws://localhost:3001'
+  phases:
+    # Gradual ramp-up of real-time connections
+    - duration: 180  # 3 minutes
+      arrivalRate: 3
+      name: "Gradual real-time connection ramp-up"
+    
+    # Peak real-time usage
+    - duration: 300  # 5 minutes
+      arrivalRate: 8
+      name: "Peak real-time activity"
+    
+    # Stress burst for real-time
+    - duration: 120  # 2 minutes
+      arrivalRate: 15
+      name: "Real-time stress burst"
+    
+    # Sustained collaboration load
+    - duration: 240  # 4 minutes
+      arrivalRate: 6
+      name: "Sustained collaboration"
+
+  # WebSocket configuration
+  ws:
+    timeout: 45
+    subprotocols: ['zoptal-realtime-v1', 'zoptal-collaboration-v1']
+
+  # Performance expectations for real-time
+  expect:
+    - statusCode: 101  # WebSocket upgrade
+    - maxErrorRate: 3  # Very low tolerance for real-time
+    - p95: 150         # 95% under 150ms for real-time
+    - p99: 300         # 99% under 300ms
+
+  # Environment setup
+  variables:
+    wsUrl: "{{ $processEnvironment.WS_URL || 'ws://localhost:3001' }}"
+    apiUrl: "{{ $processEnvironment.API_BASE_URL || 'http://localhost:3001' }}"
+    authToken: "{{ $processEnvironment.TEST_AUTH_TOKEN }}"
+    collaborationRooms: 
+      - "project_123"
+      - "project_456" 
+      - "project_789"
+
+  # Enhanced plugins for real-time metrics
+  plugins:
+    metrics-by-endpoint:
+      useOnlyRequestNames: true
+      stripQueryString: true
+    
+  # Custom metrics
+  customMetrics:
+    - name: "realtime_message_latency"
+      type: "histogram"
+    - name: "collaboration_sync_time"  
+      type: "histogram"
+    - name: "connection_stability"
+      type: "counter"
+
+# Real-time test scenarios
+scenarios:
+  # Comprehensive collaboration testing
+  - name: "Real-time Collaboration Suite"
+    weight: 35
+    engine: ws
+    beforeScenario: "setupCollaborationUser"
+    flow:
+      # Connect to collaboration WebSocket
+      - connect:
+          url: "/collaboration"
+          headers:
+            Authorization: "Bearer {{ authToken }}"
+            X-Client-Type: "performance-test"
+      
+      # Join multiple project rooms
+      - loop:
+          over: "collaborationRooms"
+          flow:
+            - send:
+                payload: |
+                  {
+                    "type": "join_room",
+                    "data": {
+                      "roomId": "{{ $item }}",
+                      "userId": "{{ userId }}",
+                      "clientId": "{{ clientId }}",
+                      "capabilities": ["edit", "comment", "cursor", "typing"]
+                    },
+                    "timestamp": "{{ $timestamp }}",
+                    "messageId": "{{ $uuid }}"
+                  }
+            - think: 0.5
+      
+      # Real-time code editing simulation
+      - loop:
+          count: 30
+          flow:
+            # Document edit operation
+            - send:
+                payload: |
+                  {
+                    "type": "operation",
+                    "data": {
+                      "roomId": "{{ $randomFromArray(collaborationRooms) }}",
+                      "operation": {
+                        "type": "insert",
+                        "position": {{ $randomInt(0, 1000) }},
+                        "content": "// Real-time edit {{ $randomString() }} at {{ $timestamp }}",
+                        "author": "{{ userId }}"
+                      },
+                      "documentId": "file_{{ $randomString() }}.tsx",
+                      "version": {{ $randomInt(1, 100) }}
+                    },
+                    "timestamp": "{{ $timestamp }}"
+                  }
+            - think: 0.3
+            
+            # Cursor position update
+            - send:
+                payload: |
+                  {
+                    "type": "cursor_update",
+                    "data": {
+                      "roomId": "{{ $randomFromArray(collaborationRooms) }}",
+                      "position": {
+                        "line": {{ $randomInt(1, 500) }},
+                        "column": {{ $randomInt(1, 120) }},
+                        "file": "src/components/{{ $randomString() }}.tsx"
+                      },
+                      "userId": "{{ userId }}"
+                    }
+                  }
+            - think: 0.1
+            
+            # Selection update
+            - send:
+                payload: |
+                  {
+                    "type": "selection_update",
+                    "data": {
+                      "roomId": "{{ $randomFromArray(collaborationRooms) }}",
+                      "selection": {
+                        "start": {{ $randomInt(0, 500) }},
+                        "end": {{ $randomInt(501, 1000) }},
+                        "file": "src/utils/{{ $randomString() }}.ts"
+                      },
+                      "userId": "{{ userId }}"
+                    }
+                  }
+            - think: 0.2
+      
+      # Live commenting
+      - loop:
+          count: 10
+          flow:
+            - send:
+                payload: |
+                  {
+                    "type": "comment_create",
+                    "data": {
+                      "roomId": "{{ $randomFromArray(collaborationRooms) }}",
+                      "comment": {
+                        "content": "Performance test comment {{ $randomInt(1, 1000) }}",
+                        "position": {
+                          "line": {{ $randomInt(1, 200) }},
+                          "file": "src/app.tsx"
+                        },
+                        "author": "{{ userId }}",
+                        "commentId": "{{ $uuid }}"
+                      }
+                    }
+                  }
+            - think: 2
+            
+            # Reply to comment
+            - send:
+                payload: |
+                  {
+                    "type": "comment_reply", 
+                    "data": {
+                      "roomId": "{{ $randomFromArray(collaborationRooms) }}",
+                      "parentCommentId": "{{ $uuid }}",
+                      "reply": {
+                        "content": "Reply to performance test comment",
+                        "author": "{{ userId }}",
+                        "replyId": "{{ $uuid }}"
+                      }
+                    }
+                  }
+            - think: 3
+      
+      # Leave rooms gracefully
+      - loop:
+          over: "collaborationRooms"
+          flow:
+            - send:
+                payload: |
+                  {
+                    "type": "leave_room",
+                    "data": {
+                      "roomId": "{{ $item }}",
+                      "userId": "{{ userId }}"
+                    }
+                  }
+
+  # Multi-channel chat testing
+  - name: "Real-time Chat System"
+    weight: 25
+    engine: ws
+    beforeScenario: "setupChatUser"
+    flow:
+      # Connect to chat system
+      - connect:
+          url: "/chat"
+          headers:
+            Authorization: "Bearer {{ authToken }}"
+      
+      # Join multiple chat channels
+      - send:
+          payload: |
+            {
+              "type": "join_channels",
+              "data": {
+                "channels": [
+                  "general",
+                  "project_123",
+                  "team_alpha",
+                  "announcements"
+                ],
+                "userId": "{{ userId }}"
+              }
+            }
+      - think: 1
+      
+      # High-frequency messaging
+      - loop:
+          count: 50
+          flow:
+            - send:
+                payload: |
+                  {
+                    "type": "message",
+                    "data": {
+                      "channel": "{{ $randomFromArray(['general', 'project_123', 'team_alpha']) }}",
+                      "message": {
+                        "text": "Performance test message {{ $randomInt(1, 10000) }} with emoji 🚀",
+                        "type": "text",
+                        "author": "{{ userId }}",
+                        "messageId": "{{ $uuid }}",
+                        "timestamp": "{{ $timestamp }}"
+                      }
+                    }
+                  }
+            - think: 0.5
+      
+      # File sharing in chat
+      - loop:
+          count: 5
+          flow:
+            - send:
+                payload: |
+                  {
+                    "type": "file_share",
+                    "data": {
+                      "channel": "project_123",
+                      "file": {
+                        "name": "performance-test-{{ $randomString() }}.png",
+                        "size": {{ $randomInt(100000, 2000000) }},
+                        "type": "image/png",
+                        "url": "https://example.com/files/{{ $randomString() }}.png"
+                      },
+                      "author": "{{ userId }}"
+                    }
+                  }
+            - think: 3
+      
+      # Message reactions
+      - loop:
+          count: 20
+          flow:
+            - send:
+                payload: |
+                  {
+                    "type": "reaction",
+                    "data": {
+                      "messageId": "{{ $uuid }}",
+                      "reaction": "{{ $randomFromArray(['👍', '❤️', '😄', '🎉', '👏']) }}",
+                      "userId": "{{ userId }}"
+                    }
+                  }
+            - think: 0.3
+      
+      # Typing indicators
+      - loop:
+          count: 15
+          flow:
+            - send:
+                payload: |
+                  {
+                    "type": "typing_start",
+                    "data": {
+                      "channel": "general",
+                      "userId": "{{ userId }}"
+                    }
+                  }
+            - think: 2
+            - send:
+                payload: |
+                  {
+                    "type": "typing_stop",
+                    "data": {
+                      "channel": "general", 
+                      "userId": "{{ userId }}"
+                    }
+                  }
+            - think: 1
+
+  # Notification streaming
+  - name: "Real-time Notifications"
+    weight: 20
+    engine: ws
+    beforeScenario: "setupNotificationUser"
+    flow:
+      # Connect to notification stream
+      - connect:
+          url: "/notifications/stream"
+          headers:
+            Authorization: "Bearer {{ authToken }}"
+      
+      # Subscribe to notification channels
+      - send:
+          payload: |
+            {
+              "type": "subscribe",
+              "data": {
+                "userId": "{{ userId }}",
+                "channels": [
+                  "system",
+                  "collaboration", 
+                  "mentions",
+                  "billing",
+                  "ai_completion",
+                  "project_updates"
+                ],
+                "preferences": {
+                  "realtime": true,
+                  "priority": "all"
+                }
+              }
+            }
+      - think: 1
+      
+      # Simulate receiving various notifications
+      - loop:
+          count: 25
+          flow:
+            # System notification
+            - send:
+                payload: |
+                  {
+                    "type": "trigger_notification",
+                    "data": {
+                      "type": "system",
+                      "payload": {
+                        "title": "System Update",
+                        "message": "Performance test notification {{ $randomInt(1, 1000) }}",
+                        "priority": "{{ $randomFromArray(['low', 'medium', 'high']) }}",
+                        "category": "system"
+                      },
+                      "userId": "{{ userId }}"
+                    }
+                  }
+            - think: 0.8
+      
+      # Mention notifications
+      - loop:
+          count: 10
+          flow:
+            - send:
+                payload: |
+                  {
+                    "type": "trigger_notification", 
+                    "data": {
+                      "type": "mention",
+                      "payload": {
+                        "title": "You were mentioned",
+                        "message": "@{{ userId }} mentioned you in project discussion",
+                        "source": "chat",
+                        "sourceId": "{{ $uuid }}",
+                        "priority": "high"
+                      },
+                      "userId": "{{ userId }}"
+                    }
+                  }
+            - think: 2
+      
+      # Batch notification acknowledgment
+      - send:
+          payload: |
+            {
+              "type": "bulk_acknowledge",
+              "data": {
+                "userId": "{{ userId }}",
+                "notificationIds": [
+                  "{{ $uuid }}", "{{ $uuid }}", "{{ $uuid }}", 
+                  "{{ $uuid }}", "{{ $uuid }}"
+                ]
+              }
+            }
+
+  # AI streaming responses
+  - name: "AI Streaming Performance"
+    weight: 20
+    engine: ws
+    beforeScenario: "setupAIUser"
+    flow:
+      # Connect to AI streaming service
+      - connect:
+          url: "/ai/stream"
+          headers:
+            Authorization: "Bearer {{ authToken }}"
+            X-Client-Type: "performance-test"
+      
+      # Start multiple AI streaming sessions
+      - loop:
+          count: 3
+          flow:
+            - send:
+                payload: |
+                  {
+                    "type": "start_stream",
+                    "data": {
+                      "requestId": "{{ $uuid }}",
+                      "prompt": "{{ $randomFromArray(aiPrompts) }}",
+                      "context": {
+                        "projectId": "{{ $randomFromArray(collaborationRooms) }}",
+                        "language": "typescript",
+                        "framework": "react"
+                      },
+                      "model": "gpt-4",
+                      "stream": true,
+                      "maxTokens": 2000
+                    }
+                  }
+            - think: 1
+      
+      # Wait for streaming responses (AI takes time)
+      - think: 45
+      
+      # Send follow-up requests
+      - loop:
+          count: 2
+          flow:
+            - send:
+                payload: |
+                  {
+                    "type": "followup_stream",
+                    "data": {
+                      "requestId": "{{ $uuid }}",
+                      "prompt": "Now optimize the previous code for performance and add error handling",
+                      "context": {
+                        "followup": true,
+                        "previousContext": true
+                      },
+                      "stream": true
+                    }
+                  }
+            - think: 30
+      
+      # Code explanation streaming
+      - send:
+          payload: |
+            {
+              "type": "explain_stream",
+              "data": {
+                "code": "const component = () => { return <div>Hello</div>; };",
+                "requestType": "explanation",
+                "detail": "comprehensive",
+                "stream": true
+              }
+            }
+      - think: 20
+
+# Custom setup functions
+functions:
+  setupCollaborationUser:
+    - set:
+        userId: "collab_user_{{ $randomString() }}"
+        clientId: "client_{{ $uuid }}"
+        authToken: "{{ $processEnvironment.TEST_AUTH_TOKEN || 'test-token' }}"
+
+  setupChatUser:
+    - set:
+        userId: "chat_user_{{ $randomString() }}"
+        username: "TestUser{{ $randomInt(1, 1000) }}"
+        authToken: "{{ $processEnvironment.TEST_AUTH_TOKEN || 'test-token' }}"
+
+  setupNotificationUser:
+    - set:
+        userId: "notif_user_{{ $randomString() }}"
+        deviceId: "device_{{ $uuid }}"
+        authToken: "{{ $processEnvironment.TEST_AUTH_TOKEN || 'test-token' }}"
+
+  setupAIUser:
+    - set:
+        userId: "ai_user_{{ $randomString() }}"
+        sessionId: "session_{{ $uuid }}"
+        authToken: "{{ $processEnvironment.TEST_AUTH_TOKEN || 'test-token' }}"
+
+# Test data
+data:
+  aiPrompts:
+    - "Create a React component for user authentication with form validation"
+    - "Build a responsive dashboard layout with sidebar navigation"
+    - "Implement a real-time chat component with WebSocket integration"
+    - "Design a file upload component with drag-and-drop functionality"
+    - "Create a data visualization component using Chart.js"
+    - "Build a search component with autocomplete and filtering"
+    - "Implement a shopping cart with state management"
+    - "Create a blog post editor with markdown support"
+
+  messageTypes:
+    - text
+    - file
+    - image
+    - code
+    - link
+
+  notificationTypes:
+    - system
+    - mention
+    - collaboration
+    - billing
+    - ai_completion
+    - project_update
+
+# Connection monitoring
+monitoring:
+  - type: "websocket_connections"
+    threshold: 100
+  - type: "message_rate"
+    threshold: 1000
+  - type: "latency"
+    threshold: 300
+
+# After test hooks
+after:
+  flow:
+    - log: "Real-time performance test completed"
+    - log: "WebSocket connections: {{ $wsConnections }}"
+    - log: "Messages sent: {{ $messagesSent }}"
+    - log: "Average latency: {{ $avgLatency }}ms"
+
+# Reporting configuration
+output:
+  - type: json
+    path: "./results/artillery-realtime-results.json"
+  - type: html
+    path: "./results/artillery-realtime-report.html"
+  - type: csv
+    path: "./results/artillery-realtime-metrics.csv"

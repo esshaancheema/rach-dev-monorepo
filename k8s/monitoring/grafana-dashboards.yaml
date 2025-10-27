@@ -1,0 +1,274 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-dashboards-config
+  namespace: monitoring
+data:
+  dashboards.yaml: |
+    apiVersion: 1
+    providers:
+    - name: 'default'
+      orgId: 1
+      folder: ''
+      type: file
+      disableDeletion: false
+      updateIntervalSeconds: 30
+      options:
+        path: /var/lib/grafana/dashboards
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-dashboards
+  namespace: monitoring
+data:
+  kubernetes-overview.json: |
+    {
+      "dashboard": {
+        "id": null,
+        "title": "Kubernetes Overview",
+        "tags": ["kubernetes", "overview"],
+        "timezone": "browser",
+        "refresh": "30s",
+        "time": {
+          "from": "now-1h",
+          "to": "now"
+        },
+        "panels": [
+          {
+            "id": 1,
+            "title": "Cluster CPU Usage",
+            "type": "stat",
+            "targets": [
+              {
+                "expr": "100 - (avg(irate(node_cpu_seconds_total{mode=\"idle\"}[5m])) * 100)",
+                "refId": "A"
+              }
+            ],
+            "fieldConfig": {
+              "defaults": {
+                "unit": "percent",
+                "thresholds": {
+                  "steps": [
+                    {"color": "green", "value": null},
+                    {"color": "yellow", "value": 70},
+                    {"color": "red", "value": 85}
+                  ]
+                }
+              }
+            },
+            "gridPos": {"h": 8, "w": 6, "x": 0, "y": 0}
+          },
+          {
+            "id": 2,
+            "title": "Cluster Memory Usage",
+            "type": "stat",
+            "targets": [
+              {
+                "expr": "(1 - (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes)) * 100",
+                "refId": "A"
+              }
+            ],
+            "fieldConfig": {
+              "defaults": {
+                "unit": "percent",
+                "thresholds": {
+                  "steps": [
+                    {"color": "green", "value": null},
+                    {"color": "yellow", "value": 70},
+                    {"color": "red", "value": 85}
+                  ]
+                }
+              }
+            },
+            "gridPos": {"h": 8, "w": 6, "x": 6, "y": 0}
+          },
+          {
+            "id": 3,
+            "title": "Pod Count",
+            "type": "stat",
+            "targets": [
+              {
+                "expr": "sum(kube_pod_info)",
+                "refId": "A"
+              }
+            ],
+            "fieldConfig": {
+              "defaults": {
+                "unit": "short"
+              }
+            },
+            "gridPos": {"h": 8, "w": 6, "x": 12, "y": 0}
+          },
+          {
+            "id": 4,
+            "title": "Node Count",
+            "type": "stat",
+            "targets": [
+              {
+                "expr": "sum(kube_node_info)",
+                "refId": "A"
+              }
+            ],
+            "fieldConfig": {
+              "defaults": {
+                "unit": "short"
+              }
+            },
+            "gridPos": {"h": 8, "w": 6, "x": 18, "y": 0}
+          }
+        ]
+      }
+    }
+  
+  zoptal-services.json: |
+    {
+      "dashboard": {
+        "id": null,
+        "title": "Zoptal Services Overview",
+        "tags": ["zoptal", "services"],
+        "timezone": "browser",
+        "refresh": "30s",
+        "time": {
+          "from": "now-1h",
+          "to": "now"
+        },
+        "panels": [
+          {
+            "id": 1,
+            "title": "Service Response Times",
+            "type": "timeseries",
+            "targets": [
+              {
+                "expr": "histogram_quantile(0.95, sum(rate(http_request_duration_seconds_bucket{namespace=\"zoptal\"}[5m])) by (service, le))",
+                "legendFormat": "{{service}} - 95th percentile",
+                "refId": "A"
+              },
+              {
+                "expr": "histogram_quantile(0.50, sum(rate(http_request_duration_seconds_bucket{namespace=\"zoptal\"}[5m])) by (service, le))",
+                "legendFormat": "{{service}} - 50th percentile",
+                "refId": "B"
+              }
+            ],
+            "fieldConfig": {
+              "defaults": {
+                "unit": "s"
+              }
+            },
+            "gridPos": {"h": 8, "w": 12, "x": 0, "y": 8}
+          },
+          {
+            "id": 2,
+            "title": "Request Rate",
+            "type": "timeseries",
+            "targets": [
+              {
+                "expr": "sum(rate(http_requests_total{namespace=\"zoptal\"}[5m])) by (service)",
+                "legendFormat": "{{service}}",
+                "refId": "A"
+              }
+            ],
+            "fieldConfig": {
+              "defaults": {
+                "unit": "reqps"
+              }
+            },
+            "gridPos": {"h": 8, "w": 12, "x": 12, "y": 8}
+          },
+          {
+            "id": 3,
+            "title": "Error Rate",
+            "type": "timeseries",
+            "targets": [
+              {
+                "expr": "sum(rate(http_requests_total{namespace=\"zoptal\", status=~\"5..\"}[5m])) by (service) / sum(rate(http_requests_total{namespace=\"zoptal\"}[5m])) by (service) * 100",
+                "legendFormat": "{{service}} - 5xx errors",
+                "refId": "A"
+              },
+              {
+                "expr": "sum(rate(http_requests_total{namespace=\"zoptal\", status=~\"4..\"}[5m])) by (service) / sum(rate(http_requests_total{namespace=\"zoptal\"}[5m])) by (service) * 100",
+                "legendFormat": "{{service}} - 4xx errors",
+                "refId": "B"
+              }
+            ],
+            "fieldConfig": {
+              "defaults": {
+                "unit": "percent"
+              }
+            },
+            "gridPos": {"h": 8, "w": 24, "x": 0, "y": 16}
+          }
+        ]
+      }
+    }
+  
+  database-monitoring.json: |
+    {
+      "dashboard": {
+        "id": null,
+        "title": "Database Monitoring",
+        "tags": ["database", "postgresql", "redis"],
+        "timezone": "browser",
+        "refresh": "30s",
+        "time": {
+          "from": "now-1h",
+          "to": "now"
+        },
+        "panels": [
+          {
+            "id": 1,
+            "title": "Database Connections",
+            "type": "timeseries",
+            "targets": [
+              {
+                "expr": "pg_stat_database_numbackends{datname=\"zoptal\"}",
+                "legendFormat": "Active Connections",
+                "refId": "A"
+              }
+            ],
+            "fieldConfig": {
+              "defaults": {
+                "unit": "short"
+              }
+            },
+            "gridPos": {"h": 8, "w": 8, "x": 0, "y": 0}
+          },
+          {
+            "id": 2,
+            "title": "Database Query Rate",
+            "type": "timeseries",
+            "targets": [
+              {
+                "expr": "rate(pg_stat_database_xact_commit{datname=\"zoptal\"}[5m]) + rate(pg_stat_database_xact_rollback{datname=\"zoptal\"}[5m])",
+                "legendFormat": "Transactions/sec",
+                "refId": "A"
+              }
+            ],
+            "fieldConfig": {
+              "defaults": {
+                "unit": "short"
+              }
+            },
+            "gridPos": {"h": 8, "w": 8, "x": 8, "y": 0}
+          },
+          {
+            "id": 3,
+            "title": "Redis Operations",
+            "type": "timeseries",
+            "targets": [
+              {
+                "expr": "rate(redis_commands_processed_total[5m])",
+                "legendFormat": "Commands/sec",
+                "refId": "A"
+              }
+            ],
+            "fieldConfig": {
+              "defaults": {
+                "unit": "short"
+              }
+            },
+            "gridPos": {"h": 8, "w": 8, "x": 16, "y": 0}
+          }
+        ]
+      }
+    }

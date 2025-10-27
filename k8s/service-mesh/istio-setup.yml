@@ -1,0 +1,500 @@
+# Istio Service Mesh Configuration for Zoptal Platform
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: istio-system
+  labels:
+    istio-injection: disabled
+---
+# Istio Control Plane
+apiVersion: install.istio.io/v1alpha1
+kind: IstioOperator
+metadata:
+  name: zoptal-istio
+  namespace: istio-system
+spec:
+  values:
+    global:
+      meshID: zoptal-mesh
+      meshConfig:
+        defaultConfig:
+          discoveryRefreshDelay: 10s
+          proxyStatsMatcher:
+            inclusionRegexps:
+            - ".*circuit_breakers.*"
+            - ".*upstream_rq_retry.*"
+            - ".*upstream_rq_pending.*"
+            - ".*_cx_.*"
+        extensionProviders:
+        - name: jaeger
+          envoyOtelAls:
+            service: jaeger-collector.istio-system.svc.cluster.local
+            port: 14250
+        - name: prometheus
+          prometheus:
+            service: prometheus.monitoring.svc.cluster.local
+            port: 9090
+        - name: grafana
+          grafana:
+            service: grafana.monitoring.svc.cluster.local
+            port: 3000
+      proxy:
+        resources:
+          requests:
+            cpu: 100m
+            memory: 128Mi
+          limits:
+            cpu: 200m
+            memory: 256Mi
+  components:
+    pilot:
+      k8s:
+        resources:
+          requests:
+            cpu: 200m
+            memory: 256Mi
+          limits:
+            cpu: 500m
+            memory: 512Mi
+        hpaSpec:
+          minReplicas: 2
+          maxReplicas: 5
+          metrics:
+          - type: Resource
+            resource:
+              name: cpu
+              target:
+                type: Utilization
+                averageUtilization: 80
+    ingressGateways:
+    - name: istio-ingressgateway
+      enabled: true
+      k8s:
+        service:
+          type: LoadBalancer
+          ports:
+          - port: 80
+            targetPort: 8080
+            name: http2
+          - port: 443
+            targetPort: 8443
+            name: https
+          - port: 31400
+            targetPort: 31400
+            name: tcp
+        resources:
+          requests:
+            cpu: 100m
+            memory: 128Mi
+          limits:
+            cpu: 2000m
+            memory: 1024Mi
+        hpaSpec:
+          minReplicas: 2
+          maxReplicas: 5
+    egressGateways:
+    - name: istio-egressgateway
+      enabled: true
+      k8s:
+        resources:
+          requests:
+            cpu: 100m
+            memory: 128Mi
+          limits:
+            cpu: 200m
+            memory: 256Mi
+---
+# Gateway for external traffic
+apiVersion: networking.istio.io/v1beta1
+kind: Gateway
+metadata:
+  name: zoptal-gateway
+  namespace: zoptal
+spec:
+  selector:
+    istio: ingressgateway
+  servers:
+  - port:
+      number: 80
+      name: http
+      protocol: HTTP
+    hosts:
+    - "*.zoptal.com"
+    - "api.zoptal.com"
+    - "app.zoptal.com"
+    tls:
+      httpsRedirect: true
+  - port:
+      number: 443
+      name: https
+      protocol: HTTPS
+    hosts:
+    - "*.zoptal.com"
+    - "api.zoptal.com"
+    - "app.zoptal.com"
+    tls:
+      mode: SIMPLE
+      credentialName: zoptal-tls-secret
+---
+# Virtual Service for routing
+apiVersion: networking.istio.io/v1beta1
+kind: VirtualService
+metadata:
+  name: zoptal-routing
+  namespace: zoptal
+spec:
+  hosts:
+  - "api.zoptal.com"
+  - "app.zoptal.com"
+  gateways:
+  - zoptal-gateway
+  http:
+  # API Routes
+  - match:
+    - uri:
+        prefix: /api/auth
+    route:
+    - destination:
+        host: auth-service
+        port:
+          number: 4000
+    fault:
+      delay:
+        percentage:
+          value: 0.1
+        fixedDelay: 5s
+    retries:
+      attempts: 3
+      perTryTimeout: 10s
+    timeout: 30s
+  - match:
+    - uri:
+        prefix: /api/projects
+    route:
+    - destination:
+        host: project-service
+        port:
+          number: 4001
+    retries:
+      attempts: 3
+      perTryTimeout: 10s
+    timeout: 30s
+  - match:
+    - uri:
+        prefix: /api/ai
+    route:
+    - destination:
+        host: ai-service
+        port:
+          number: 4002
+    timeout: 120s # AI requests can take longer
+  - match:
+    - uri:
+        prefix: /api/billing
+    route:
+    - destination:
+        host: billing-service
+        port:
+          number: 4003
+    retries:
+      attempts: 5
+      perTryTimeout: 10s
+    timeout: 30s
+  - match:
+    - uri:
+        prefix: /api/notifications
+    route:
+    - destination:
+        host: notification-service
+        port:
+          number: 4004
+    retries:
+      attempts: 3
+      perTryTimeout: 5s
+    timeout: 15s
+  - match:
+    - uri:
+        prefix: /api/analytics
+    route:
+    - destination:
+        host: analytics-service
+        port:
+          number: 4005
+    retries:
+      attempts: 2
+      perTryTimeout: 10s
+    timeout: 30s
+  # Frontend Routes
+  - match:
+    - uri:
+        prefix: /admin
+    route:
+    - destination:
+        host: admin-app
+        port:
+          number: 3002
+  - match:
+    - uri:
+        prefix: /
+    route:
+    - destination:
+        host: web-main-app
+        port:
+          number: 3000
+---
+# Destination Rules for load balancing and circuit breaking
+apiVersion: networking.istio.io/v1beta1
+kind: DestinationRule
+metadata:
+  name: auth-service-dr
+  namespace: zoptal
+spec:
+  host: auth-service
+  trafficPolicy:
+    loadBalancer:
+      simple: LEAST_CONN
+    connectionPool:
+      tcp:
+        maxConnections: 100
+      http:
+        http1MaxPendingRequests: 50
+        http2MaxRequests: 100
+        maxRequestsPerConnection: 10
+        maxRetries: 3
+        idleTimeout: 30s
+    circuitBreaker:
+      consecutiveGatewayErrors: 5
+      consecutiveServerErrors: 5
+      interval: 30s
+      baseEjectionTime: 30s
+      maxEjectionPercent: 50
+      minHealthPercent: 30
+  portLevelSettings:
+  - port:
+      number: 4000
+    connectionPool:
+      tcp:
+        maxConnections: 50
+---
+apiVersion: networking.istio.io/v1beta1
+kind: DestinationRule
+metadata:
+  name: project-service-dr
+  namespace: zoptal
+spec:
+  host: project-service
+  trafficPolicy:
+    loadBalancer:
+      simple: ROUND_ROBIN
+    connectionPool:
+      tcp:
+        maxConnections: 100
+      http:
+        http1MaxPendingRequests: 50
+        http2MaxRequests: 100
+        maxRequestsPerConnection: 10
+        maxRetries: 3
+    circuitBreaker:
+      consecutiveGatewayErrors: 5
+      consecutiveServerErrors: 5
+      interval: 30s
+      baseEjectionTime: 30s
+      maxEjectionPercent: 50
+---
+apiVersion: networking.istio.io/v1beta1
+kind: DestinationRule
+metadata:
+  name: ai-service-dr
+  namespace: zoptal
+spec:
+  host: ai-service
+  trafficPolicy:
+    loadBalancer:
+      simple: LEAST_CONN
+    connectionPool:
+      tcp:
+        maxConnections: 50
+      http:
+        http1MaxPendingRequests: 20
+        http2MaxRequests: 50
+        maxRequestsPerConnection: 5
+        maxRetries: 2
+        idleTimeout: 60s
+    circuitBreaker:
+      consecutiveGatewayErrors: 3
+      consecutiveServerErrors: 3
+      interval: 60s
+      baseEjectionTime: 60s
+      maxEjectionPercent: 30
+---
+apiVersion: networking.istio.io/v1beta1
+kind: DestinationRule
+metadata:
+  name: billing-service-dr
+  namespace: zoptal
+spec:
+  host: billing-service
+  trafficPolicy:
+    loadBalancer:
+      simple: LEAST_CONN
+    connectionPool:
+      tcp:
+        maxConnections: 75
+      http:
+        http1MaxPendingRequests: 30
+        http2MaxRequests: 75
+        maxRequestsPerConnection: 8
+        maxRetries: 5
+    circuitBreaker:
+      consecutiveGatewayErrors: 3
+      consecutiveServerErrors: 3
+      interval: 30s
+      baseEjectionTime: 30s
+      maxEjectionPercent: 25
+---
+# Service Mesh Security Policies
+apiVersion: security.istio.io/v1beta1
+kind: PeerAuthentication
+metadata:
+  name: default
+  namespace: zoptal
+spec:
+  mtls:
+    mode: STRICT
+---
+# Authorization Policies
+apiVersion: security.istio.io/v1beta1
+kind: AuthorizationPolicy
+metadata:
+  name: auth-service-policy
+  namespace: zoptal
+spec:
+  selector:
+    matchLabels:
+      app: auth-service
+  rules:
+  - from:
+    - source:
+        principals: ["cluster.local/ns/zoptal/sa/auth-service"]
+    - source:
+        principals: ["cluster.local/ns/istio-system/sa/istio-ingressgateway-service-account"]
+  - to:
+    - operation:
+        methods: ["GET", "POST", "PUT", "DELETE", "PATCH"]
+        paths: ["/api/auth/*", "/health", "/metrics"]
+---
+apiVersion: security.istio.io/v1beta1
+kind: AuthorizationPolicy
+metadata:
+  name: internal-services-policy
+  namespace: zoptal
+spec:
+  selector:
+    matchLabels:
+      app: project-service
+  rules:
+  - from:
+    - source:
+        principals: 
+        - "cluster.local/ns/zoptal/sa/auth-service"
+        - "cluster.local/ns/zoptal/sa/web-main-app"
+        - "cluster.local/ns/zoptal/sa/admin-app"
+        - "cluster.local/ns/istio-system/sa/istio-ingressgateway-service-account"
+  - to:
+    - operation:
+        methods: ["GET", "POST", "PUT", "DELETE", "PATCH"]
+---
+# Telemetry Configuration
+apiVersion: telemetry.istio.io/v1alpha1
+kind: Telemetry
+metadata:
+  name: zoptal-metrics
+  namespace: zoptal
+spec:
+  metrics:
+  - providers:
+    - name: prometheus
+  - overrides:
+    - match:
+        metric: ALL_METRICS
+      tagOverrides:
+        request_protocol:
+          value: "http"
+        source_service_name:
+          value: "%{SOURCE_SERVICE_NAME | 'unknown'}"
+        destination_service_name:
+          value: "%{DESTINATION_SERVICE_NAME | 'unknown'}"
+---
+apiVersion: telemetry.istio.io/v1alpha1
+kind: Telemetry
+metadata:
+  name: zoptal-tracing
+  namespace: zoptal
+spec:
+  tracing:
+  - providers:
+    - name: jaeger
+  - customTags:
+      user_id:
+        header:
+          name: "x-user-id"
+      request_id:
+        header:
+          name: "x-request-id"
+      service_version:
+        environment:
+          name: "SERVICE_VERSION"
+---
+# Service Monitor for Prometheus
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: istio-mesh-metrics
+  namespace: istio-system
+spec:
+  selector:
+    matchLabels:
+      app: istiod
+  endpoints:
+  - port: http-monitoring
+    interval: 15s
+    path: /stats/prometheus
+---
+# Envoy Filter for rate limiting
+apiVersion: networking.istio.io/v1alpha3
+kind: EnvoyFilter
+metadata:
+  name: rate-limit-filter
+  namespace: zoptal
+spec:
+  configPatches:
+  - applyTo: HTTP_FILTER
+    match:
+      context: SIDECAR_INBOUND
+      listener:
+        filterChain:
+          filter:
+            name: "envoy.filters.network.http_connection_manager"
+    patch:
+      operation: INSERT_BEFORE
+      value:
+        name: envoy.filters.http.local_ratelimit
+        typed_config:
+          "@type": type.googleapis.com/udpa.type.v1.TypedStruct
+          type_url: type.googleapis.com/envoy.extensions.filters.http.local_ratelimit.v3.LocalRateLimit
+          value:
+            stat_prefix: rate_limiter
+            token_bucket:
+              max_tokens: 1000
+              tokens_per_fill: 100
+              fill_interval: 60s
+            filter_enabled:
+              runtime_key: rate_limit_enabled
+              default_value:
+                numerator: 100
+                denominator: HUNDRED
+            filter_enforced:
+              runtime_key: rate_limit_enforced
+              default_value:
+                numerator: 100
+                denominator: HUNDRED

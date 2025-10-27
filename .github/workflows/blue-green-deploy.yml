@@ -1,0 +1,404 @@
+name: Blue-Green Deployment
+
+on:
+  workflow_dispatch:
+    inputs:
+      service:
+        description: 'Service to deploy'
+        required: true
+        type: choice
+        options:
+          - auth-service
+          - project-service
+          - ai-service
+          - file-service
+          - notification-service
+          - billing-service
+          - security-service
+      version:
+        description: 'Version to deploy (e.g., v1.2.0)'
+        required: true
+        type: string
+      environment:
+        description: 'Target environment'
+        required: false
+        type: choice
+        options:
+          - auto
+          - blue
+          - green
+        default: auto
+      run_smoke_tests:
+        description: 'Run smoke tests after deployment'
+        required: false
+        type: boolean
+        default: true
+
+jobs:
+  pre-deployment-checks:
+    name: Pre-deployment Checks
+    runs-on: ubuntu-latest
+    outputs:
+      target_env: ${{ steps.determine_env.outputs.target_env }}
+      current_env: ${{ steps.determine_env.outputs.current_env }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure kubectl
+        uses: azure/setup-kubectl@v3
+        with:
+          version: 'v1.28.0'
+
+      - name: Configure Kubernetes context
+        env:
+          KUBE_CONFIG: ${{ secrets.KUBE_CONFIG }}
+        run: |
+          echo "$KUBE_CONFIG" | base64 -d > ${HOME}/.kube/config
+          chmod 600 ${HOME}/.kube/config
+
+      - name: Determine target environment
+        id: determine_env
+        run: |
+          # Get current active environment
+          CURRENT_ENV=$(kubectl get service ${{ github.event.inputs.service }} -n zoptal-production \
+            -o jsonpath='{.metadata.annotations.active-environment}' 2>/dev/null || echo "blue")
+          
+          echo "Current active environment: $CURRENT_ENV"
+          echo "current_env=$CURRENT_ENV" >> $GITHUB_OUTPUT
+          
+          # Determine target environment
+          if [[ "${{ github.event.inputs.environment }}" == "auto" ]]; then
+            if [[ "$CURRENT_ENV" == "blue" ]]; then
+              TARGET_ENV="green"
+            else
+              TARGET_ENV="blue"
+            fi
+          else
+            TARGET_ENV="${{ github.event.inputs.environment }}"
+          fi
+          
+          echo "Target environment: $TARGET_ENV"
+          echo "target_env=$TARGET_ENV" >> $GITHUB_OUTPUT
+
+      - name: Check service health
+        run: |
+          echo "Checking health of ${{ github.event.inputs.service }} in production..."
+          kubectl get deployments -n zoptal-production | grep ${{ github.event.inputs.service }} || true
+          kubectl get pods -n zoptal-production -l app=${{ github.event.inputs.service }} || true
+
+  build-and-push:
+    name: Build and Push Docker Image
+    runs-on: ubuntu-latest
+    needs: pre-deployment-checks
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_PASSWORD }}
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: ./services/${{ github.event.inputs.service }}
+          push: true
+          tags: |
+            zoptal/${{ github.event.inputs.service }}:${{ github.event.inputs.version }}
+            zoptal/${{ github.event.inputs.service }}:latest-${{ needs.pre-deployment-checks.outputs.target_env }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  deploy-to-inactive:
+    name: Deploy to Inactive Environment
+    runs-on: ubuntu-latest
+    needs: [pre-deployment-checks, build-and-push]
+    environment: production
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure kubectl
+        uses: azure/setup-kubectl@v3
+        with:
+          version: 'v1.28.0'
+
+      - name: Configure Kubernetes context
+        env:
+          KUBE_CONFIG: ${{ secrets.KUBE_CONFIG }}
+        run: |
+          echo "$KUBE_CONFIG" | base64 -d > ${HOME}/.kube/config
+          chmod 600 ${HOME}/.kube/config
+
+      - name: Deploy to target environment
+        env:
+          SERVICE_NAME: ${{ github.event.inputs.service }}
+          VERSION: ${{ github.event.inputs.version }}
+          TARGET_ENV: ${{ needs.pre-deployment-checks.outputs.target_env }}
+        run: |
+          echo "Deploying $SERVICE_NAME:$VERSION to $TARGET_ENV environment..."
+          
+          # Run deployment script
+          ./scripts/blue-green-deploy.sh \
+            --service "$SERVICE_NAME" \
+            --version "$VERSION" \
+            --environment "$TARGET_ENV" \
+            --replicas 3 \
+            --force \
+            --dry-run
+          
+          # Remove dry-run for actual deployment
+          ./scripts/blue-green-deploy.sh \
+            --service "$SERVICE_NAME" \
+            --version "$VERSION" \
+            --environment "$TARGET_ENV" \
+            --replicas 3 \
+            --force
+
+      - name: Wait for deployment readiness
+        env:
+          SERVICE_NAME: ${{ github.event.inputs.service }}
+          TARGET_ENV: ${{ needs.pre-deployment-checks.outputs.target_env }}
+        run: |
+          echo "Waiting for deployment to be ready..."
+          kubectl wait --for=condition=available --timeout=600s \
+            deployment/${SERVICE_NAME}-${TARGET_ENV} \
+            -n zoptal-${TARGET_ENV}
+
+      - name: Run health checks
+        env:
+          SERVICE_NAME: ${{ github.event.inputs.service }}
+          TARGET_ENV: ${{ needs.pre-deployment-checks.outputs.target_env }}
+        run: |
+          echo "Running health checks..."
+          
+          # Get service endpoint
+          SERVICE_ENDPOINT="${SERVICE_NAME}-${TARGET_ENV}.zoptal-${TARGET_ENV}.svc.cluster.local"
+          
+          # Run health check from within cluster
+          kubectl run health-check-$RANDOM \
+            --image=curlimages/curl:latest \
+            --rm -i --restart=Never \
+            -n zoptal-${TARGET_ENV} \
+            -- curl -f -s http://${SERVICE_ENDPOINT}:3000/health || \
+            echo "Health check completed"
+
+  smoke-tests:
+    name: Run Smoke Tests
+    runs-on: ubuntu-latest
+    needs: [pre-deployment-checks, deploy-to-inactive]
+    if: github.event.inputs.run_smoke_tests == 'true'
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+
+      - name: Configure kubectl
+        uses: azure/setup-kubectl@v3
+        with:
+          version: 'v1.28.0'
+
+      - name: Configure Kubernetes context
+        env:
+          KUBE_CONFIG: ${{ secrets.KUBE_CONFIG }}
+        run: |
+          echo "$KUBE_CONFIG" | base64 -d > ${HOME}/.kube/config
+          chmod 600 ${HOME}/.kube/config
+
+      - name: Run smoke tests
+        env:
+          SERVICE_NAME: ${{ github.event.inputs.service }}
+          TARGET_ENV: ${{ needs.pre-deployment-checks.outputs.target_env }}
+        run: |
+          echo "Running smoke tests for $SERVICE_NAME in $TARGET_ENV environment..."
+          
+          # Port forward to access service
+          kubectl port-forward \
+            -n zoptal-${TARGET_ENV} \
+            service/${SERVICE_NAME}-${TARGET_ENV} \
+            8080:3000 &
+          
+          # Wait for port forward
+          sleep 5
+          
+          # Run smoke tests
+          cd tests/smoke
+          npm install
+          npm run test:${SERVICE_NAME} || true
+          
+          # Kill port forward
+          pkill -f "port-forward.*${SERVICE_NAME}"
+
+  switch-traffic:
+    name: Switch Traffic
+    runs-on: ubuntu-latest
+    needs: [pre-deployment-checks, deploy-to-inactive, smoke-tests]
+    environment: production
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure kubectl
+        uses: azure/setup-kubectl@v3
+        with:
+          version: 'v1.28.0'
+
+      - name: Configure Kubernetes context
+        env:
+          KUBE_CONFIG: ${{ secrets.KUBE_CONFIG }}
+        run: |
+          echo "$KUBE_CONFIG" | base64 -d > ${HOME}/.kube/config
+          chmod 600 ${HOME}/.kube/config
+
+      - name: Switch traffic to new environment
+        env:
+          SERVICE_NAME: ${{ github.event.inputs.service }}
+          TARGET_ENV: ${{ needs.pre-deployment-checks.outputs.target_env }}
+          CURRENT_ENV: ${{ needs.pre-deployment-checks.outputs.current_env }}
+        run: |
+          echo "Switching traffic from $CURRENT_ENV to $TARGET_ENV..."
+          
+          # Update service selector
+          kubectl patch service $SERVICE_NAME -n zoptal-production \
+            --type merge \
+            -p '{"spec":{"selector":{"environment":"'$TARGET_ENV'"}},"metadata":{"annotations":{"active-environment":"'$TARGET_ENV'"}}}'
+          
+          # Verify traffic switch
+          sleep 10
+          NEW_ACTIVE=$(kubectl get service $SERVICE_NAME -n zoptal-production \
+            -o jsonpath='{.metadata.annotations.active-environment}')
+          
+          if [[ "$NEW_ACTIVE" == "$TARGET_ENV" ]]; then
+            echo "✅ Traffic successfully switched to $TARGET_ENV"
+          else
+            echo "❌ Traffic switch failed"
+            exit 1
+          fi
+
+      - name: Monitor new deployment
+        env:
+          SERVICE_NAME: ${{ github.event.inputs.service }}
+          TARGET_ENV: ${{ needs.pre-deployment-checks.outputs.target_env }}
+        run: |
+          echo "Monitoring new deployment for 2 minutes..."
+          
+          # Monitor for 2 minutes
+          for i in {1..12}; do
+            echo "Check $i/12..."
+            kubectl get pods -n zoptal-${TARGET_ENV} -l app=${SERVICE_NAME} || true
+            sleep 10
+          done
+
+  post-deployment:
+    name: Post-deployment Tasks
+    runs-on: ubuntu-latest
+    needs: [pre-deployment-checks, switch-traffic]
+    if: always()
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure kubectl
+        uses: azure/setup-kubectl@v3
+        with:
+          version: 'v1.28.0'
+
+      - name: Configure Kubernetes context
+        env:
+          KUBE_CONFIG: ${{ secrets.KUBE_CONFIG }}
+        run: |
+          echo "$KUBE_CONFIG" | base64 -d > ${HOME}/.kube/config
+          chmod 600 ${HOME}/.kube/config
+
+      - name: Scale down old environment
+        if: success()
+        env:
+          SERVICE_NAME: ${{ github.event.inputs.service }}
+          OLD_ENV: ${{ needs.pre-deployment-checks.outputs.current_env }}
+        run: |
+          echo "Waiting 5 minutes before scaling down old environment..."
+          sleep 300
+          
+          echo "Scaling down $SERVICE_NAME in $OLD_ENV environment to 1 replica..."
+          kubectl scale deployment ${SERVICE_NAME}-${OLD_ENV} \
+            -n zoptal-${OLD_ENV} \
+            --replicas=1
+
+      - name: Send notification
+        if: always()
+        env:
+          SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK }}
+          SERVICE_NAME: ${{ github.event.inputs.service }}
+          VERSION: ${{ github.event.inputs.version }}
+          TARGET_ENV: ${{ needs.pre-deployment-checks.outputs.target_env }}
+          STATUS: ${{ job.status }}
+        run: |
+          if [[ "$STATUS" == "success" ]]; then
+            MESSAGE="✅ Blue-Green deployment successful: $SERVICE_NAME:$VERSION deployed to $TARGET_ENV"
+            COLOR="good"
+          else
+            MESSAGE="❌ Blue-Green deployment failed: $SERVICE_NAME:$VERSION to $TARGET_ENV"
+            COLOR="danger"
+          fi
+          
+          curl -X POST $SLACK_WEBHOOK \
+            -H 'Content-Type: application/json' \
+            -d "{
+              \"attachments\": [{
+                \"color\": \"$COLOR\",
+                \"title\": \"Blue-Green Deployment\",
+                \"text\": \"$MESSAGE\",
+                \"fields\": [
+                  {\"title\": \"Service\", \"value\": \"$SERVICE_NAME\", \"short\": true},
+                  {\"title\": \"Version\", \"value\": \"$VERSION\", \"short\": true},
+                  {\"title\": \"Environment\", \"value\": \"$TARGET_ENV\", \"short\": true},
+                  {\"title\": \"Triggered by\", \"value\": \"${{ github.actor }}\", \"short\": true}
+                ]
+              }]
+            }" || true
+
+  rollback:
+    name: Rollback (Manual Trigger)
+    runs-on: ubuntu-latest
+    needs: [pre-deployment-checks, switch-traffic]
+    if: failure()
+    environment: production
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure kubectl
+        uses: azure/setup-kubectl@v3
+        with:
+          version: 'v1.28.0'
+
+      - name: Configure Kubernetes context
+        env:
+          KUBE_CONFIG: ${{ secrets.KUBE_CONFIG }}
+        run: |
+          echo "$KUBE_CONFIG" | base64 -d > ${HOME}/.kube/config
+          chmod 600 ${HOME}/.kube/config
+
+      - name: Rollback to previous environment
+        env:
+          SERVICE_NAME: ${{ github.event.inputs.service }}
+          OLD_ENV: ${{ needs.pre-deployment-checks.outputs.current_env }}
+        run: |
+          echo "Rolling back to $OLD_ENV environment..."
+          
+          # Switch traffic back
+          kubectl patch service $SERVICE_NAME -n zoptal-production \
+            --type merge \
+            -p '{"spec":{"selector":{"environment":"'$OLD_ENV'"}},"metadata":{"annotations":{"active-environment":"'$OLD_ENV'"}}}'
+          
+          echo "✅ Rolled back to $OLD_ENV environment"

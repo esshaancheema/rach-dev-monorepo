@@ -1,0 +1,351 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: zoptal-ingress
+  namespace: zoptal-production
+  labels:
+    app.kubernetes.io/name: zoptal-ingress
+    app.kubernetes.io/component: ingress
+    app.kubernetes.io/part-of: zoptal-platform
+  annotations:
+    # Nginx ingress controller
+    kubernetes.io/ingress.class: nginx
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/force-ssl-redirect: "true"
+    
+    # Certificate management
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+    cert-manager.io/acme-challenge-type: http01
+    
+    # Rate limiting
+    nginx.ingress.kubernetes.io/rate-limit: "100"
+    nginx.ingress.kubernetes.io/rate-limit-window: "1m"
+    
+    # CORS
+    nginx.ingress.kubernetes.io/enable-cors: "true"
+    nginx.ingress.kubernetes.io/cors-allow-origin: "https://zoptal.com,https://*.zoptal.com"
+    nginx.ingress.kubernetes.io/cors-allow-methods: "GET, POST, PUT, DELETE, OPTIONS"
+    nginx.ingress.kubernetes.io/cors-allow-headers: "DNT,User-Agent,X-Requested-With,If-Modified-Since,Cache-Control,Content-Type,Range,Authorization"
+    nginx.ingress.kubernetes.io/cors-expose-headers: "Content-Length,Content-Range"
+    nginx.ingress.kubernetes.io/cors-max-age: "1728000"
+    nginx.ingress.kubernetes.io/cors-allow-credentials: "true"
+    
+    # Security headers
+    nginx.ingress.kubernetes.io/server-snippet: |
+      add_header X-Frame-Options DENY;
+      add_header X-Content-Type-Options nosniff;
+      add_header X-XSS-Protection "1; mode=block";
+      add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
+      add_header Referrer-Policy "strict-origin-when-cross-origin";
+      add_header Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval' https://www.googletagmanager.com https://www.google-analytics.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data: https:; connect-src 'self' https://api.zoptal.com wss://api.zoptal.com; frame-ancestors 'none';";
+    
+    # Client body size
+    nginx.ingress.kubernetes.io/proxy-body-size: "10m"
+    
+    # Timeout settings
+    nginx.ingress.kubernetes.io/proxy-connect-timeout: "300"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "300"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "300"
+    
+spec:
+  tls:
+  - hosts:
+    - zoptal.com
+    - www.zoptal.com
+    - app.zoptal.com
+    - admin.zoptal.com
+    - api.zoptal.com
+    - auth.zoptal.com
+    - billing.zoptal.com
+    - ai.zoptal.com
+    - projects.zoptal.com
+    - notifications.zoptal.com
+    secretName: zoptal-tls
+  
+  rules:
+  # Main website
+  - host: zoptal.com
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: web-main
+            port:
+              number: 3000
+  
+  - host: www.zoptal.com
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: web-main
+            port:
+              number: 3000
+  
+  # Dashboard application
+  # Admin panel
+  - host: admin.zoptal.com
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: admin
+            port:
+              number: 3000
+  
+  # API Gateway
+  - host: api.zoptal.com
+    http:
+      paths:
+      - path: /auth
+        pathType: Prefix
+        backend:
+          service:
+            name: auth-service
+            port:
+              number: 4001
+      - path: /projects
+        pathType: Prefix
+        backend:
+          service:
+            name: project-service
+            port:
+              number: 4002
+      - path: /ai
+        pathType: Prefix
+        backend:
+          service:
+            name: ai-service
+            port:
+              number: 4003
+      - path: /billing
+        pathType: Prefix
+        backend:
+          service:
+            name: billing-service
+            port:
+              number: 4004
+      - path: /notifications
+        pathType: Prefix
+        backend:
+          service:
+            name: notification-service
+            port:
+              number: 4005
+
+---
+# Certificate Issuer for Let's Encrypt
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: letsencrypt-prod
+  labels:
+    app.kubernetes.io/name: cert-manager
+    app.kubernetes.io/component: cluster-issuer
+spec:
+  acme:
+    server: https://acme-v02.api.letsencrypt.org/directory
+    email: admin@zoptal.com
+    privateKeySecretRef:
+      name: letsencrypt-prod-key
+    solvers:
+    - http01:
+        ingress:
+          class: nginx
+
+---
+# Rate limiting middleware
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: zoptal-network-policy
+  namespace: zoptal-production
+  labels:
+    app.kubernetes.io/name: zoptal-network-policy
+    app.kubernetes.io/component: security
+spec:
+  podSelector: {}
+  policyTypes:
+  - Ingress
+  - Egress
+  ingress:
+  # Allow ingress from nginx ingress controller
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          name: ingress-nginx
+  # Allow inter-service communication
+  - from:
+    - podSelector: {}
+    ports:
+    - protocol: TCP
+      port: 3000
+    - protocol: TCP
+      port: 4001
+    - protocol: TCP
+      port: 4002
+    - protocol: TCP
+      port: 4003
+    - protocol: TCP
+      port: 4004
+    - protocol: TCP
+      port: 4005
+  # Allow database access
+  - from:
+    - podSelector:
+        matchLabels:
+          app.kubernetes.io/component: backend
+    ports:
+    - protocol: TCP
+      port: 5432
+    - protocol: TCP
+      port: 6379
+  egress:
+  # Allow all egress (can be restricted further)
+  - {}
+
+---
+# Service mesh configuration (if using Istio)
+apiVersion: networking.istio.io/v1beta1
+kind: Gateway
+metadata:
+  name: zoptal-gateway
+  namespace: zoptal-production
+  labels:
+    app.kubernetes.io/name: zoptal-gateway
+    app.kubernetes.io/component: service-mesh
+spec:
+  selector:
+    istio: ingressgateway
+  servers:
+  - port:
+      number: 80
+      name: http
+      protocol: HTTP
+    hosts:
+    - zoptal.com
+    - www.zoptal.com
+    - app.zoptal.com
+    - admin.zoptal.com
+    - api.zoptal.com
+    tls:
+      httpsRedirect: true
+  - port:
+      number: 443
+      name: https
+      protocol: HTTPS
+    hosts:
+    - zoptal.com
+    - www.zoptal.com
+    - app.zoptal.com
+    - admin.zoptal.com
+    - api.zoptal.com
+    tls:
+      mode: SIMPLE
+      credentialName: zoptal-tls
+
+---
+apiVersion: networking.istio.io/v1beta1
+kind: VirtualService
+metadata:
+  name: zoptal-virtual-service
+  namespace: zoptal-production
+  labels:
+    app.kubernetes.io/name: zoptal-virtual-service
+    app.kubernetes.io/component: service-mesh
+spec:
+  hosts:
+  - zoptal.com
+  - www.zoptal.com
+  - app.zoptal.com
+  - admin.zoptal.com
+  - api.zoptal.com
+  gateways:
+  - zoptal-gateway
+  http:
+  # Main website routing
+  - match:
+    - headers:
+        ":authority":
+          exact: zoptal.com
+    - headers:
+        ":authority":
+          exact: www.zoptal.com
+    route:
+    - destination:
+        host: web-main
+        port:
+          number: 3000
+  # Admin routing
+  - match:
+    - headers:
+        ":authority":
+          exact: admin.zoptal.com
+    route:
+    - destination:
+        host: admin
+        port:
+          number: 3000
+  # API routing
+  - match:
+    - headers:
+        ":authority":
+          exact: api.zoptal.com
+      uri:
+        prefix: /auth
+    route:
+    - destination:
+        host: auth-service
+        port:
+          number: 4001
+  - match:
+    - headers:
+        ":authority":
+          exact: api.zoptal.com
+      uri:
+        prefix: /projects
+    route:
+    - destination:
+        host: project-service
+        port:
+          number: 4002
+  - match:
+    - headers:
+        ":authority":
+          exact: api.zoptal.com
+      uri:
+        prefix: /ai
+    route:
+    - destination:
+        host: ai-service
+        port:
+          number: 4003
+    timeout: 300s
+  - match:
+    - headers:
+        ":authority":
+          exact: api.zoptal.com
+      uri:
+        prefix: /billing
+    route:
+    - destination:
+        host: billing-service
+        port:
+          number: 4004
+  - match:
+    - headers:
+        ":authority":
+          exact: api.zoptal.com
+      uri:
+        prefix: /notifications
+    route:
+    - destination:
+        host: notification-service
+        port:
+          number: 4005

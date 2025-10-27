@@ -1,0 +1,1401 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// User Management
+model User {
+  id                String    @id @default(cuid())
+  email             String    @unique
+  emailVerified     DateTime?
+  username          String?   @unique // New unique username field
+  firstName         String?   // Split from name field for better UX
+  lastName          String?   // Split from name field for better UX
+  name              String?   // Keep for backward compatibility
+  phone             String?   
+  phoneVerified     DateTime?
+  password          String?   // Will be deprecated in favor of passwordless auth
+  image             String?
+  role              UserRole  @default(USER)
+  status            UserStatus @default(ACTIVE)
+  twoFactorEnabled  Boolean   @default(false)
+  
+  // Profile
+  company           String?
+  industry          String?
+  country           String?
+  city              String?
+  timezone          String?
+  language          String    @default("en")
+  
+  // Subscription
+  subscriptionTier  SubscriptionTier @default(FREE)
+  subscriptionEnd   DateTime?
+  aiCredits         Int       @default(3)
+  
+  // Metadata
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+  lastLoginAt       DateTime?
+  
+  // Soft Delete
+  deletedAt         DateTime?
+  deletedBy         String?
+  deleteReason      String?
+  
+  // Force Password Reset
+  forcePasswordReset Boolean   @default(false)
+  passwordResetBy    String?
+  passwordResetAt    DateTime?
+  passwordResetReason String?
+  
+  // Relations
+  accounts          Account[]
+  sessions          Session[]
+  projects          Project[]
+  aiAgents          AIAgent[]
+  consultations     Consultation[]
+  notifications     Notification[]
+  activities        Activity[]
+  payments          Payment[]
+  teamMembers       TeamMember[]
+  
+  // Authentication Service Relations
+  refreshTokens     RefreshToken[]
+  loginAttempts     LoginAttempt[]
+  twoFactorAuth     TwoFactorAuth?
+  verificationTokens VerificationToken[]
+  otpTokens         OTPToken[]          // New OTP tokens relation
+  deviceTrusts      DeviceTrust[]       // New device trust relation
+  securityEvents    SecurityEvent[]
+  oauthAccounts     OAuthAccount[]
+  passwordHistory   PasswordHistory[]
+  deviceFingerprints DeviceFingerprint[]
+  
+  // Account Recovery Relations
+  accountRecoveries AccountRecovery[]
+  securityQuestions SecurityQuestion[]
+  samlResponses     SAMLResponse[]
+  samlSessions      SAMLSession[]
+  
+  @@index([email])
+  @@index([username])
+  @@index([role])
+  @@index([subscriptionTier])
+  @@index([deletedAt])
+}
+
+model Account {
+  id                String  @id @default(cuid())
+  userId            String
+  type              String
+  provider          String
+  providerAccountId String
+  refresh_token     String?
+  access_token      String?
+  expires_at        Int?
+  token_type        String?
+  scope             String?
+  id_token          String?
+  session_state     String?
+  
+  user              User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  @@unique([provider, providerAccountId])
+  @@index([userId])
+}
+
+model Session {
+  id           String   @id @default(cuid())
+  sessionToken String   @unique
+  userId       String
+  expires      DateTime
+  
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  @@index([userId])
+}
+
+// Projects
+model Project {
+  id              String   @id @default(cuid())
+  name            String
+  description     String?
+  type            ProjectType
+  status          ProjectStatus @default(PLANNING)
+  visibility      Visibility @default(PRIVATE)
+  
+  // Technical Details
+  framework       String?
+  deploymentUrl   String?
+  githubUrl       String?
+  
+  // AI Integration
+  aiModel         String?
+  promptCount     Int      @default(0)
+  
+  // Metadata
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+  deployedAt      DateTime?
+  
+  // Relations
+  userId          String
+  user            User     @relation(fields: [userId], references: [id])
+  files           ProjectFile[]
+  deployments     Deployment[]
+  collaborators   ProjectCollaborator[]
+  aiConversations AIConversation[]
+  
+  @@index([userId])
+  @@index([status])
+  @@index([type])
+}
+
+model ProjectFile {
+  id        String   @id @default(cuid())
+  filename  String
+  path      String
+  content   String?
+  size      Int
+  mimeType  String
+  projectId String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  
+  project   Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  
+  @@index([projectId])
+}
+
+model Deployment {
+  id          String           @id @default(cuid())
+  projectId   String
+  version     String
+  status      DeploymentStatus @default(PENDING)
+  url         String?
+  logs        String?
+  createdAt   DateTime         @default(now())
+  completedAt DateTime?
+  
+  project     Project          @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  
+  @@index([projectId])
+  @@index([status])
+}
+
+model ProjectCollaborator {
+  id        String               @id @default(cuid())
+  projectId String
+  userId    String
+  role      CollaboratorRole     @default(VIEWER)
+  invitedAt DateTime             @default(now())
+  joinedAt  DateTime?
+  
+  project   Project              @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  
+  @@unique([projectId, userId])
+  @@index([projectId])
+  @@index([userId])
+}
+
+// AI Agents
+model AIAgent {
+  id              String   @id @default(cuid())
+  name            String
+  description     String?
+  type            AIAgentType
+  status          AIAgentStatus @default(ACTIVE)
+  
+  // Configuration
+  model           String
+  systemPrompt    String?
+  temperature     Float    @default(0.7)
+  maxTokens       Int      @default(1000)
+  
+  // Usage
+  totalRequests   Int      @default(0)
+  totalTokens     Int      @default(0)
+  
+  // Metadata
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+  
+  // Relations
+  userId          String
+  user            User     @relation(fields: [userId], references: [id])
+  conversations   AIConversation[]
+  
+  @@index([userId])
+  @@index([type])
+}
+
+model AIConversation {
+  id        String           @id @default(cuid())
+  title     String?
+  projectId String?
+  agentId   String
+  messages  AIMessage[]
+  createdAt DateTime         @default(now())
+  updatedAt DateTime         @updatedAt
+  
+  project   Project?         @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  agent     AIAgent          @relation(fields: [agentId], references: [id], onDelete: Cascade)
+  
+  @@index([projectId])
+  @@index([agentId])
+}
+
+model AIMessage {
+  id             String         @id @default(cuid())
+  conversationId String
+  role           MessageRole
+  content        String
+  tokens         Int?
+  createdAt      DateTime       @default(now())
+  
+  conversation   AIConversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  
+  @@index([conversationId])
+}
+
+// Consultations
+model Consultation {
+  id          String             @id @default(cuid())
+  userId      String
+  type        ConsultationType
+  status      ConsultationStatus @default(REQUESTED)
+  title       String
+  description String
+  scheduledAt DateTime?
+  duration    Int?               // minutes
+  price       Decimal?
+  notes       String?
+  createdAt   DateTime           @default(now())
+  updatedAt   DateTime           @updatedAt
+  
+  user        User               @relation(fields: [userId], references: [id])
+  
+  @@index([userId])
+  @@index([status])
+  @@index([scheduledAt])
+}
+
+// Notifications
+model Notification {
+  id        String             @id @default(cuid())
+  userId    String
+  type      NotificationType
+  title     String
+  message   String
+  read      Boolean            @default(false)
+  data      Json?
+  createdAt DateTime           @default(now())
+  
+  user      User               @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  @@index([userId])
+  @@index([read])
+  @@index([createdAt])
+}
+
+// Activity Logs
+model Activity {
+  id          String       @id @default(cuid())
+  userId      String
+  action      String
+  resource    String?
+  resourceId  String?
+  metadata    Json?
+  ipAddress   String?
+  userAgent   String?
+  createdAt   DateTime     @default(now())
+  
+  user        User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  @@index([userId])
+  @@index([action])
+  @@index([createdAt])
+}
+
+// Payments
+model Payment {
+  id              String        @id @default(cuid())
+  userId          String
+  stripePaymentId String?       @unique
+  amount          Decimal
+  currency        String        @default("usd")
+  status          PaymentStatus @default(PENDING)
+  description     String?
+  metadata        Json?
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+  
+  user            User          @relation(fields: [userId], references: [id])
+  
+  @@index([userId])
+  @@index([status])
+  @@index([createdAt])
+}
+
+// Team Management
+model TeamMember {
+  id        String     @id @default(cuid())
+  userId    String
+  teamId    String
+  role      TeamRole   @default(MEMBER)
+  invitedAt DateTime   @default(now())
+  joinedAt  DateTime?
+  
+  user      User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  @@unique([userId, teamId])
+  @@index([userId])
+  @@index([teamId])
+}
+
+// Enums
+enum UserRole {
+  USER
+  DEVELOPER
+  ADMIN
+  SUPER_ADMIN
+}
+
+enum UserStatus {
+  ACTIVE
+  INACTIVE
+  SUSPENDED
+  DELETED
+}
+
+enum SubscriptionTier {
+  FREE
+  STARTER
+  PRO
+  MAX
+  ENTERPRISE
+}
+
+enum ProjectType {
+  WEB_APP
+  MOBILE_APP
+  SAAS
+  MICRO_SAAS
+  AI_AGENT
+  ENTERPRISE
+  ECOMMERCE
+  MARKETPLACE
+}
+
+enum ProjectStatus {
+  PLANNING
+  DEVELOPMENT
+  TESTING
+  REVIEW
+  DEPLOYED
+  ARCHIVED
+}
+
+enum Visibility {
+  PUBLIC
+  PRIVATE
+  TEAM
+}
+
+enum DeploymentStatus {
+  PENDING
+  BUILDING
+  DEPLOYED
+  FAILED
+}
+
+enum CollaboratorRole {
+  OWNER
+  ADMIN
+  EDITOR
+  VIEWER
+}
+
+enum AIAgentType {
+  CHATBOT
+  CODE_ASSISTANT
+  CONTENT_GENERATOR
+  DATA_ANALYZER
+  CUSTOM
+}
+
+enum AIAgentStatus {
+  ACTIVE
+  INACTIVE
+  TRAINING
+  ERROR
+}
+
+enum MessageRole {
+  USER
+  ASSISTANT
+  SYSTEM
+}
+
+enum ConsultationType {
+  TECHNICAL
+  BUSINESS
+  DESIGN
+  STRATEGY
+}
+
+enum ConsultationStatus {
+  REQUESTED
+  SCHEDULED
+  IN_PROGRESS
+  COMPLETED
+  CANCELLED
+}
+
+enum NotificationType {
+  PROJECT_UPDATE
+  PAYMENT_SUCCESS
+  PAYMENT_FAILED
+  CONSULTATION_SCHEDULED
+  SYSTEM_ANNOUNCEMENT
+  AI_CREDITS_LOW
+}
+
+enum PaymentStatus {
+  PENDING
+  SUCCEEDED
+  FAILED
+  CANCELLED
+  REFUNDED
+}
+
+enum TeamRole {
+  OWNER
+  ADMIN
+  MEMBER
+}
+
+// Authentication Service Specific Tables
+
+// JWT Refresh Tokens
+model RefreshToken {
+  id        String   @id @default(cuid())
+  token     String   @unique
+  userId    String
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  revokedAt DateTime?
+  
+  // Device/session info for security
+  userAgent String?
+  ipAddress String?
+  deviceId  String?
+  
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  @@index([userId])
+  @@index([token])
+  @@index([expiresAt])
+}
+
+// Login Attempt Tracking for Security
+model LoginAttempt {
+  id          String     @id @default(cuid())
+  email       String?
+  phone       String?
+  ipAddress   String
+  userAgent   String?
+  success     Boolean    @default(false)
+  failureReason String?
+  userId      String?
+  createdAt   DateTime   @default(now())
+  
+  // Geolocation data
+  country     String?
+  city        String?
+  
+  user        User?      @relation(fields: [userId], references: [id], onDelete: SetNull)
+  
+  @@index([email])
+  @@index([phone])
+  @@index([ipAddress])
+  @@index([createdAt])
+  @@index([success])
+}
+
+// Password Reset Tokens
+model PasswordReset {
+  id        String   @id @default(cuid())
+  email     String
+  token     String   @unique
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdAt DateTime @default(now())
+  
+  // Additional security
+  ipAddress String?
+  userAgent String?
+  
+  @@index([email])
+  @@index([token])
+  @@index([expiresAt])
+}
+
+// Two-Factor Authentication Settings
+model TwoFactorAuth {
+  id           String    @id @default(cuid())
+  userId       String    @unique
+  secret       String    // TOTP secret (base32 encoded)
+  backupCodes  String?   // Comma-separated backup codes
+  enabled      Boolean   @default(false)
+  setupAt      DateTime? // When 2FA was first set up
+  enabledAt    DateTime? // When 2FA was enabled
+  lastUsedAt   DateTime? // Last time 2FA was used
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+  
+  user         User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  @@index([userId])
+}
+
+// Email/Phone Verification Tokens
+model VerificationToken {
+  id        String          @id @default(cuid())
+  type      VerificationType
+  token     String          @unique
+  value     String          // Email or phone number
+  userId    String?
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdAt DateTime        @default(now())
+  
+  // Additional context
+  ipAddress String?
+  userAgent String?
+  
+  user      User?           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  @@index([token])
+  @@index([type])
+  @@index([value])
+  @@index([expiresAt])
+}
+
+// OTP Tokens for Passwordless Authentication
+model OTPToken {
+  id        String   @id @default(cuid())
+  code      String   // 4-7 digit OTP code
+  userId    String?
+  type      OTPType  // EMAIL_LOGIN, PHONE_LOGIN, EMAIL_VERIFICATION, PHONE_VERIFICATION
+  target    String   // Email or phone number where OTP was sent
+  expiresAt DateTime // 5-10 minutes expiry
+  attempts  Int      @default(0) // Track failed attempts
+  usedAt    DateTime? // When OTP was successfully used
+  createdAt DateTime @default(now())
+  
+  // Security context
+  ipAddress String?
+  userAgent String?
+  
+  // Rate limiting context
+  sessionId String? // Track requests from same session
+  
+  user      User?    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  @@index([code])
+  @@index([type])
+  @@index([target])
+  @@index([expiresAt])
+  @@index([sessionId])
+}
+
+// Device Trust for Remember Me Functionality
+model DeviceTrust {
+  id           String    @id @default(cuid())
+  userId       String
+  deviceId     String    // Unique device fingerprint
+  trustToken   String    @unique // Secure token for trusted device
+  trustLevel   TrustLevel @default(BASIC) // BASIC, HIGH, BIOMETRIC
+  deviceInfo   Json?     // Browser, OS, etc.
+  ipAddress    String?
+  location     String?   // City, Country from IP
+  expiresAt    DateTime  // 30 days default
+  lastUsedAt   DateTime?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+  
+  // Security flags
+  isActive     Boolean   @default(true)
+  revokedAt    DateTime?
+  revokedBy    String?   // Manual revocation
+  
+  user         User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  @@unique([userId, deviceId]) // One trust record per user-device
+  @@index([trustToken])
+  @@index([deviceId])
+  @@index([expiresAt])
+  @@index([isActive])
+}
+
+// Security Events Log
+model SecurityEvent {
+  id          String            @id @default(cuid())
+  userId      String?
+  type        SecurityEventType
+  description String
+  severity    SecuritySeverity  @default(LOW)
+  metadata    Json?
+  ipAddress   String?
+  userAgent   String?
+  createdAt   DateTime          @default(now())
+  
+  // Resolution tracking
+  resolved    Boolean           @default(false)
+  resolvedAt  DateTime?
+  resolvedBy  String?
+  
+  user        User?             @relation(fields: [userId], references: [id], onDelete: SetNull)
+  
+  @@index([userId])
+  @@index([type])
+  @@index([severity])
+  @@index([createdAt])
+  @@index([resolved])
+}
+
+// Rate Limiting Records
+model RateLimit {
+  id        String   @id @default(cuid())
+  key       String   // IP, userId, or combination
+  type      String   // login, register, password_reset, etc.
+  count     Int      @default(1)
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  
+  @@unique([key, type])
+  @@index([key])
+  @@index([type])
+  @@index([expiresAt])
+}
+
+// OAuth State Management
+model OAuthState {
+  id        String   @id @default(cuid())
+  state     String   @unique
+  provider  String   // google, github, etc.
+  redirectUri String?
+  codeVerifier String? // For PKCE
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+  
+  // User context if linking accounts
+  userId    String?
+  
+  @@index([state])
+  @@index([provider])
+  @@index([expiresAt])
+}
+
+// OAuth Account Connections
+model OAuthAccount {
+  id                String   @id @default(cuid())
+  userId            String
+  provider          String   // google, github, microsoft
+  providerAccountId String   // The account ID from the OAuth provider
+  
+  // Token information
+  accessToken       String?  // OAuth access token
+  refreshToken      String?  // OAuth refresh token (if available)
+  expiresAt         DateTime? // When the access token expires
+  tokenType         String?  // Usually "bearer"
+  scope             String?  // Granted scopes
+  
+  // Provider-specific data
+  providerData      Json?    // Raw provider profile data
+  email             String?  // Email from provider
+  name              String?  // Display name from provider
+  avatarUrl         String?  // Profile picture URL
+  
+  // Metadata
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+  lastUsedAt        DateTime?
+  
+  user              User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  @@unique([provider, providerAccountId])
+  @@unique([userId, provider])
+  @@index([userId])
+  @@index([provider])
+}
+
+// Password History for Security
+model PasswordHistory {
+  id            String   @id @default(cuid())
+  userId        String
+  passwordHash  String   // Hashed password
+  createdAt     DateTime @default(now())
+  
+  // Security metadata
+  ipAddress     String?
+  userAgent     String?
+  
+  user          User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  @@index([userId])
+  @@index([createdAt])
+}
+
+// Device Fingerprinting for Login Tracking
+model DeviceFingerprint {
+  id              String   @id @default(cuid())
+  userId          String
+  deviceId        String   @unique // Generated device identifier
+  
+  // Browser/Device Information
+  userAgent       String
+  platform        String?  // Windows, macOS, Linux, iOS, Android
+  browser         String?  // Chrome, Firefox, Safari, Edge
+  browserVersion  String?
+  osVersion       String?
+  
+  // Device Characteristics
+  screenResolution String?
+  timezone        String?
+  language        String?
+  colorDepth      String?
+  
+  // Network Information
+  ipAddress       String
+  country         String?
+  city            String?
+  isp             String?
+  
+  // Trust and Security
+  isTrusted       Boolean  @default(false)
+  isBlocked       Boolean  @default(false)
+  riskScore       Int      @default(0) // 0-100, higher = more risky
+  
+  // Usage Statistics
+  loginCount      Int      @default(1)
+  lastLoginAt     DateTime @default(now())
+  firstSeenAt     DateTime @default(now())
+  
+  // Metadata
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+  
+  user            User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  @@index([userId])
+  @@index([deviceId])
+  @@index([ipAddress])
+  @@index([isTrusted])
+  @@index([isBlocked])
+  @@index([lastLoginAt])
+}
+
+// Additional Enums for Auth Service
+enum VerificationType {
+  EMAIL_VERIFICATION
+  PHONE_VERIFICATION
+  EMAIL_CHANGE
+  PHONE_CHANGE
+  ACCOUNT_RECOVERY
+}
+
+enum SecurityEventType {
+  LOGIN_SUCCESS
+  LOGIN_FAILURE
+  ACCOUNT_LOCKED
+  PASSWORD_CHANGED
+  EMAIL_CHANGED
+  PHONE_CHANGED
+  TWO_FACTOR_ENABLED
+  TWO_FACTOR_DISABLED
+  SUSPICIOUS_LOGIN
+  ACCOUNT_CREATED
+  ACCOUNT_DELETED
+  OAUTH_LINKED
+  OAUTH_UNLINKED
+  TOKEN_REFRESH
+  SESSION_EXPIRED
+  ACCOUNT_RECOVERY_INITIATED
+  ACCOUNT_RECOVERY_SUCCESS
+  ACCOUNT_RECOVERY_FAILED
+  ACCOUNT_RECOVERY_OVERRIDE
+  SECURITY_QUESTION_FAILED
+}
+
+enum SecuritySeverity {
+  LOW
+  MEDIUM
+  HIGH
+  CRITICAL
+}
+
+// New Enums for Modern Authentication System
+
+enum OTPType {
+  EMAIL_LOGIN
+  PHONE_LOGIN
+  EMAIL_VERIFICATION
+  PHONE_VERIFICATION
+  USERNAME_LOGIN_EMAIL
+  USERNAME_LOGIN_PHONE
+  ACCOUNT_RECOVERY
+}
+
+enum TrustLevel {
+  BASIC      // Standard trusted device
+  HIGH       // High security verification
+  BIOMETRIC  // Biometric authentication enabled
+  ADMIN      // Administrative trust level
+}
+
+// Account Recovery System Models
+
+// Account Recovery Sessions
+model AccountRecovery {
+  id                  String              @id @default(cuid())
+  userId              String
+  recoveryMethod      RecoveryMethod
+  status              RecoveryStatus      @default(PENDING)
+  challengeData       Json?               // Stores challenge details and responses
+  
+  // Session Management  
+  sessionToken        String              @unique
+  expiresAt           DateTime
+  completedAt         DateTime?
+  
+  // Security Context
+  ipAddress           String?
+  userAgent           String?
+  location            String?
+  
+  // Progress Tracking
+  challengesRequired  Int                 @default(2)
+  challengesCompleted Int                 @default(0)
+  
+  // Metadata
+  createdAt           DateTime            @default(now())
+  updatedAt           DateTime            @updatedAt
+  
+  // Relations
+  user                User                @relation(fields: [userId], references: [id], onDelete: Cascade)
+  challenges          RecoveryChallenge[]
+  
+  @@index([userId])
+  @@index([sessionToken])
+  @@index([status])
+  @@index([expiresAt])
+}
+
+// Individual Recovery Challenges
+model RecoveryChallenge {
+  id              String           @id @default(cuid())
+  recoveryId      String
+  type            ChallengeType
+  status          ChallengeStatus  @default(PENDING)
+  
+  // Challenge Data
+  target          String?          // Email/phone for verification
+  code            String?          // OTP code for verification
+  questionData    Json?            // Security questions and hashed answers
+  
+  // Attempt Tracking
+  attempts        Int              @default(0)
+  maxAttempts     Int              @default(3)
+  
+  // Timing
+  expiresAt       DateTime
+  completedAt     DateTime?
+  createdAt       DateTime         @default(now())
+  
+  // Relations
+  recovery        AccountRecovery  @relation(fields: [recoveryId], references: [id], onDelete: Cascade)
+  
+  @@index([recoveryId])
+  @@index([type])
+  @@index([status])
+  @@index([expiresAt])
+}
+
+// Security Questions (for recovery)
+model SecurityQuestion {
+  id            String                  @id @default(cuid())
+  userId        String
+  question      String
+  answerHash    String                  // Hashed answer for security
+  isActive      Boolean                 @default(true)
+  createdAt     DateTime                @default(now())
+  updatedAt     DateTime                @updatedAt
+  
+  // Relations
+  user          User                    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  @@index([userId])
+  @@index([isActive])
+}
+
+// Admin Recovery Overrides
+model AdminRecoveryOverride {
+  id              String        @id @default(cuid())
+  targetUserId    String
+  adminUserId     String
+  reason          String
+  status          OverrideStatus @default(PENDING)
+  
+  // Override Details
+  overrideToken   String        @unique
+  expiresAt       DateTime
+  usedAt          DateTime?
+  
+  // Audit Trail
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+  
+  // Relations - Note: We don't use direct User relations to avoid constraint issues
+  @@index([targetUserId])
+  @@index([adminUserId])
+  @@index([overrideToken])
+  @@index([status])
+  @@index([expiresAt])
+}
+
+// Account Recovery Enums
+enum RecoveryMethod {
+  EMAIL_ONLY
+  PHONE_ONLY
+  MULTI_FACTOR
+  SECURITY_QUESTIONS
+  ADMIN_OVERRIDE
+}
+
+enum RecoveryStatus {
+  PENDING
+  IN_PROGRESS
+  COMPLETED
+  FAILED
+  EXPIRED
+  CANCELLED
+}
+
+enum ChallengeType {
+  EMAIL_VERIFICATION
+  PHONE_VERIFICATION
+  SECURITY_QUESTIONS
+  ADMIN_OVERRIDE
+  BACKUP_EMAIL
+  ALTERNATIVE_PHONE
+}
+
+enum ChallengeStatus {
+  PENDING
+  COMPLETED
+  FAILED
+  EXPIRED
+}
+
+enum OverrideStatus {
+  PENDING
+  APPROVED
+  USED
+  EXPIRED
+  REVOKED
+}
+
+// SAML SSO Models
+
+// SAML Requests Storage
+model SAMLRequest {
+  id                          String   @id // SAML Request ID
+  issuer                      String   // Service Provider entity ID
+  destination                 String   // IdP SSO URL
+  assertionConsumerServiceURL String   // SP callback URL
+  relayState                  String?  // Optional relay state
+  forceAuthn                  Boolean  @default(false)
+  isPassive                   Boolean  @default(false)
+  expiresAt                   DateTime // Request expiration
+  createdAt                   DateTime @default(now())
+  
+  // Security context
+  ipAddress                   String?
+  userAgent                   String?
+  
+  @@index([issuer])
+  @@index([expiresAt])
+  @@index([createdAt])
+}
+
+// SAML Service Providers Configuration
+model SAMLServiceProvider {
+  id                          String   @id @default(cuid())
+  entityId                    String   @unique // SP Entity ID
+  name                        String   // Friendly name
+  description                 String?
+  
+  // SP Configuration
+  acsUrl                      String   // Assertion Consumer Service URL
+  sloUrl                      String?  // Single Logout URL
+  
+  // Certificates and Security
+  certificate                 String?  // SP certificate for verification
+  wantAssertionsSigned        Boolean  @default(true)
+  wantRequestsSigned          Boolean  @default(false)
+  
+  // Attribute Mapping
+  attributeMapping            Json?    // Custom attribute mappings
+  nameIdFormat               String   @default("persistent")
+  
+  // Status and Metadata
+  isActive                    Boolean  @default(true)
+  createdAt                   DateTime @default(now())
+  updatedAt                   DateTime @updatedAt
+  createdBy                   String?  // Admin who created this SP
+  
+  @@index([entityId])
+  @@index([isActive])
+  @@index([createdAt])
+}
+
+// SAML Response Audit Log
+model SAMLResponse {
+  id                    String   @id @default(cuid())
+  requestId             String   // Original SAML request ID
+  userId                String   // User who authenticated
+  spEntityId            String   // Service Provider entity ID
+  nameId                String   // NameID sent to SP
+  sessionIndex          String   // SAML session index
+  
+  // Response Details
+  assertionId           String   // SAML assertion ID
+  responseId            String   // SAML response ID
+  destination           String   // SP ACS URL
+  
+  // Security and Audit
+  ipAddress             String?
+  userAgent             String?
+  location              String?
+  
+  // Status
+  status                SAMLResponseStatus @default(SUCCESS)
+  errorMessage          String?
+  
+  // Timing
+  issuedAt              DateTime @default(now())
+  expiresAt             DateTime
+  
+  // Relations
+  user                  User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  @@index([userId])
+  @@index([requestId])
+  @@index([spEntityId])
+  @@index([sessionIndex])
+  @@index([issuedAt])
+  @@index([status])
+}
+
+// SAML Session Tracking
+model SAMLSession {
+  id              String   @id @default(cuid())
+  sessionIndex    String   @unique // SAML session index
+  userId          String   // Authenticated user
+  spEntityId      String   // Service Provider
+  nameId          String   // NameID format
+  
+  // Session Details
+  isActive        Boolean  @default(true)
+  startedAt       DateTime @default(now())
+  lastAccessAt    DateTime @default(now())
+  expiresAt       DateTime
+  
+  // Security Context
+  ipAddress       String?
+  userAgent       String?
+  location        String?
+  
+  // Logout tracking
+  loggedOutAt     DateTime?
+  logoutMethod    String?  // SP_INITIATED, IDP_INITIATED, TIMEOUT
+  
+  // Relations
+  user            User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  @@index([userId])
+  @@index([sessionIndex])
+  @@index([spEntityId])
+  @@index([isActive])
+  @@index([startedAt])
+  @@index([expiresAt])
+}
+
+enum SAMLResponseStatus {
+  SUCCESS
+  FAILED
+  EXPIRED
+  INVALID_REQUEST
+  USER_NOT_FOUND
+  ACCESS_DENIED
+}
+
+// Enhanced OAuth 2.0 / OpenID Connect Models
+
+// OAuth JWKS Storage
+model OAuthJWKS {
+  id          String   @id @default(cuid())
+  keyId       String   @unique // JWK kid parameter
+  keys        String   // JSON string of JWKS
+  algorithm   String   // RS256, ES256, etc.
+  isActive    Boolean  @default(true)
+  expiresAt   DateTime
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  
+  @@index([keyId])
+  @@index([isActive])
+  @@index([expiresAt])
+}
+
+// OAuth Token Storage (for oidc-provider adapter)
+model OAuthToken {
+  id         String   @id @default(cuid())
+  modelType  String   // Grant, AccessToken, RefreshToken, etc.
+  modelId    String   // Token ID
+  payload    String   // JSON payload
+  grantId    String?  // Grant ID for token grouping
+  userCode   String?  // For device flow
+  uid        String?  // Interaction UID
+  expiresAt  DateTime
+  createdAt  DateTime @default(now())
+  
+  @@unique([modelType, modelId])
+  @@index([grantId])
+  @@index([userCode])
+  @@index([uid])
+  @@index([expiresAt])
+}
+
+// OAuth Client Registration
+model OAuthClient {
+  id                    String   @id @default(cuid())
+  clientId              String   @unique
+  clientSecret          String?  // For confidential clients
+  metadata              String   // JSON client metadata
+  isActive              Boolean  @default(true)
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
+  
+  // Client relationships
+  deviceCodes           OAuthDeviceCode[]
+  pushedAuthRequests    OAuthPushedAuthRequest[]
+  authorizationDetails  OAuthAuthorizationDetail[]
+  
+  @@index([clientId])
+  @@index([isActive])
+}
+
+// Device Authorization Grant (RFC 8628)
+model OAuthDeviceCode {
+  id             String      @id @default(cuid())
+  deviceCode     String      @unique
+  userCode       String      @unique
+  clientId       String
+  scope          String?
+  userId         String?     // Set when user authorizes
+  status         DeviceCodeStatus @default(PENDING)
+  interval       Int         @default(5) // Polling interval in seconds
+  expiresAt      DateTime
+  authorizedAt   DateTime?
+  createdAt      DateTime    @default(now())
+  
+  // Relations
+  client         OAuthClient @relation(fields: [clientId], references: [clientId], onDelete: Cascade)
+  
+  @@index([deviceCode])
+  @@index([userCode])
+  @@index([clientId])
+  @@index([status])
+  @@index([expiresAt])
+}
+
+// Pushed Authorization Requests (RFC 9126)
+model OAuthPushedAuthRequest {
+  id          String      @id @default(cuid())
+  requestUri  String      @unique
+  parameters  String      // JSON authorization parameters
+  clientId    String
+  used        Boolean     @default(false)
+  expiresAt   DateTime
+  createdAt   DateTime    @default(now())
+  
+  // Relations
+  client      OAuthClient @relation(fields: [clientId], references: [clientId], onDelete: Cascade)
+  
+  @@index([requestUri])
+  @@index([clientId])
+  @@index([used])
+  @@index([expiresAt])
+}
+
+// Rich Authorization Requests (RAR)
+model OAuthAuthorizationDetail {
+  id          String      @id @default(cuid())
+  clientId    String
+  type        String      // Authorization detail type
+  locations   String?     // JSON array of resource locations
+  actions     String?     // JSON array of actions
+  datatypes   String?     // JSON array of data types
+  identifier  String?     // Resource identifier
+  privileges  String?     // JSON privileges object
+  isActive    Boolean     @default(true)
+  createdAt   DateTime    @default(now())
+  updatedAt   DateTime    @updatedAt
+  
+  // Relations
+  client      OAuthClient @relation(fields: [clientId], references: [clientId], onDelete: Cascade)
+  
+  @@index([clientId])
+  @@index([type])
+  @@index([isActive])
+}
+
+// OAuth Grant Audit Log
+model OAuthGrant {
+  id              String       @id @default(cuid())
+  grantId         String       @unique
+  clientId        String
+  userId          String?
+  scope           String?
+  grantType       String       // authorization_code, client_credentials, etc.
+  status          GrantStatus  @default(ACTIVE)
+  
+  // Token information
+  accessTokenId   String?
+  refreshTokenId  String?
+  idTokenId       String?
+  
+  // Metadata
+  ipAddress       String?
+  userAgent       String?
+  location        String?
+  
+  // Timing
+  issuedAt        DateTime     @default(now())
+  expiresAt       DateTime?
+  revokedAt       DateTime?
+  lastUsedAt      DateTime?
+  
+  @@index([grantId])
+  @@index([clientId])
+  @@index([userId])
+  @@index([status])
+  @@index([issuedAt])
+}
+
+// OAuth Session Management
+model OAuthSession {
+  id              String    @id @default(cuid())
+  sessionId       String    @unique // OIDC session ID
+  accountId       String    // User account ID
+  clientIds       String    // JSON array of client IDs
+  
+  // Session state
+  isActive        Boolean   @default(true)
+  startedAt       DateTime  @default(now())
+  lastActivityAt  DateTime  @default(now())
+  expiresAt       DateTime
+  
+  // Logout tracking
+  endedAt         DateTime?
+  endedBy         String?   // 'user', 'admin', 'timeout', 'backchannel'
+  
+  // Security context
+  ipAddress       String?
+  userAgent       String?
+  location        String?
+  
+  @@index([sessionId])
+  @@index([accountId])
+  @@index([isActive])
+  @@index([startedAt])
+  @@index([expiresAt])
+}
+
+// Token Introspection Audit
+model OAuthTokenIntrospection {
+  id            String   @id @default(cuid())
+  tokenId       String   // Token being introspected
+  clientId      String?  // Client performing introspection
+  active        Boolean  // Token active status
+  tokenType     String?  // Token type
+  scope         String?  // Token scope
+  clientName    String?  // Client name
+  username      String?  // Username (if available)
+  introspectedAt DateTime @default(now())
+  
+  @@index([tokenId])
+  @@index([clientId])
+  @@index([introspectedAt])
+}
+
+// Backchannel Logout Session
+model OAuthBackchannelLogout {
+  id              String           @id @default(cuid())
+  sessionId       String           // OIDC session ID
+  clientId        String           // Target client
+  logoutToken     String           // JWT logout token
+  status          BackchannelStatus @default(PENDING)
+  
+  // Delivery tracking
+  endpoint        String           // Client's logout endpoint
+  attempts        Int              @default(0)
+  maxAttempts     Int              @default(3)
+  nextRetryAt     DateTime?
+  
+  // Response tracking
+  responseStatus  Int?             // HTTP response status
+  responseTime    Int?             // Response time in ms
+  errorMessage    String?          // Error details
+  
+  // Timing
+  createdAt       DateTime         @default(now())
+  completedAt     DateTime?
+  
+  @@index([sessionId])
+  @@index([clientId])
+  @@index([status])
+  @@index([nextRetryAt])
+}
+
+// Enums for OAuth models
+enum DeviceCodeStatus {
+  PENDING
+  AUTHORIZED
+  DENIED
+  EXPIRED
+  CONSUMED
+}
+
+enum GrantStatus {
+  ACTIVE
+  REVOKED
+  EXPIRED
+}
+
+enum BackchannelStatus {
+  PENDING
+  SUCCESS
+  FAILED
+  RETRYING
+}

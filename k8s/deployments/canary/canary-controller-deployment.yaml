@@ -1,0 +1,279 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: canary-controller
+  namespace: zoptal-production
+  labels:
+    app: canary-controller
+    component: deployment
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: canary-controller
+  template:
+    metadata:
+      labels:
+        app: canary-controller
+        component: deployment
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8090"
+        prometheus.io/path: "/metrics"
+    spec:
+      serviceAccountName: canary-controller-sa
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1001
+        runAsGroup: 1001
+        fsGroup: 1001
+      containers:
+      - name: canary-controller
+        image: zoptal/canary-controller:v1.0.0
+        ports:
+        - containerPort: 8090
+          name: http
+        env:
+        - name: NODE_ENV
+          value: "production"
+        - name: PORT
+          value: "8090"
+        - name: PROMETHEUS_URL
+          value: "http://prometheus.zoptal-monitoring:9090"
+        - name: ANALYSIS_INTERVAL
+          value: "300"
+        - name: ERROR_THRESHOLD
+          value: "1.0"
+        - name: LATENCY_THRESHOLD
+          value: "500"
+        - name: SUCCESS_THRESHOLD
+          value: "99.0"
+        resources:
+          requests:
+            memory: "256Mi"
+            cpu: "200m"
+          limits:
+            memory: "512Mi"
+            cpu: "500m"
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: http
+          initialDelaySeconds: 30
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: http
+          initialDelaySeconds: 5
+          periodSeconds: 5
+          timeoutSeconds: 3
+          failureThreshold: 3
+        volumeMounts:
+        - name: config
+          mountPath: /app/config
+          readOnly: true
+      volumes:
+      - name: config
+        configMap:
+          name: canary-controller-config
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 100
+            podAffinityTerm:
+              labelSelector:
+                matchExpressions:
+                - key: app
+                  operator: In
+                  values:
+                  - canary-controller
+              topologyKey: kubernetes.io/hostname
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: canary-controller
+  namespace: zoptal-production
+  labels:
+    app: canary-controller
+    component: deployment
+spec:
+  selector:
+    app: canary-controller
+  ports:
+  - name: http
+    port: 8090
+    targetPort: http
+    protocol: TCP
+  type: ClusterIP
+
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: canary-controller-sa
+  namespace: zoptal-production
+  labels:
+    app: canary-controller
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: canary-controller-role
+rules:
+- apiGroups: [""]
+  resources: ["services", "endpoints", "pods"]
+  verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+- apiGroups: ["apps"]
+  resources: ["deployments", "replicasets"]
+  verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+- apiGroups: ["networking.k8s.io"]
+  resources: ["ingresses"]
+  verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+- apiGroups: ["networking.istio.io"]
+  resources: ["virtualservices", "destinationrules"]
+  verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+- apiGroups: ["metrics.k8s.io"]
+  resources: ["pods", "nodes"]
+  verbs: ["get", "list"]
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: canary-controller-binding
+subjects:
+- kind: ServiceAccount
+  name: canary-controller-sa
+  namespace: zoptal-production
+roleRef:
+  kind: ClusterRole
+  name: canary-controller-role
+  apiGroup: rbac.authorization.k8s.io
+
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: canary-controller-config
+  namespace: zoptal-production
+  labels:
+    app: canary-controller
+data:
+  config.json: |
+    {
+      "defaultThresholds": {
+        "errorRate": 1.0,
+        "latency": 500,
+        "successRate": 99.0
+      },
+      "analysisInterval": 300,
+      "maxCanaryDuration": 3600,
+      "autoPromoteAfter": 1800,
+      "services": {
+        "auth-service": {
+          "port": 3001,
+          "healthPath": "/health",
+          "metricsPath": "/metrics"
+        },
+        "project-service": {
+          "port": 3002,
+          "healthPath": "/health",
+          "metricsPath": "/metrics"
+        },
+        "ai-service": {
+          "port": 3003,
+          "healthPath": "/health",
+          "metricsPath": "/metrics",
+          "resources": {
+            "requests": { "memory": "512Mi", "cpu": "500m" },
+            "limits": { "memory": "2Gi", "cpu": "2000m" }
+          }
+        },
+        "file-service": {
+          "port": 3004,
+          "healthPath": "/health",
+          "metricsPath": "/metrics"
+        },
+        "notification-service": {
+          "port": 3005,
+          "healthPath": "/health",
+          "metricsPath": "/metrics"
+        },
+        "billing-service": {
+          "port": 3006,
+          "healthPath": "/health",
+          "metricsPath": "/metrics"
+        },
+        "security-service": {
+          "port": 3007,
+          "healthPath": "/health",
+          "metricsPath": "/metrics"
+        }
+      }
+    }
+
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: canary-controller-pdb
+  namespace: zoptal-production
+  labels:
+    app: canary-controller
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: canary-controller
+
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: canary-controller-netpol
+  namespace: zoptal-production
+  labels:
+    app: canary-controller
+spec:
+  podSelector:
+    matchLabels:
+      app: canary-controller
+  policyTypes:
+  - Ingress
+  - Egress
+  ingress:
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          name: zoptal-production
+    - podSelector: {}
+    ports:
+    - protocol: TCP
+      port: 8090
+  egress:
+  - to:
+    - namespaceSelector:
+        matchLabels:
+          name: zoptal-monitoring
+    ports:
+    - protocol: TCP
+      port: 9090
+  - to:
+    - namespaceSelector:
+        matchLabels:
+          name: zoptal-production
+    - namespaceSelector:
+        matchLabels:
+          name: zoptal-canary
+  - to: []
+    ports:
+    - protocol: TCP
+      port: 443
+    - protocol: UDP
+      port: 53

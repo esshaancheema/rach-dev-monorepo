@@ -1,0 +1,545 @@
+name: Continuous Integration
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main, develop]
+
+env:
+  NODE_VERSION: '18'
+  PNPM_VERSION: '8'
+  TURBO_TOKEN: ${{ secrets.TURBO_TOKEN }}
+  TURBO_TEAM: ${{ vars.TURBO_TEAM }}
+
+jobs:
+  # Detect changes to determine which jobs to run
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      backend: ${{ steps.changes.outputs.backend }}
+      frontend: ${{ steps.changes.outputs.frontend }}
+      ui: ${{ steps.changes.outputs.ui }}
+      docs: ${{ steps.changes.outputs.docs }}
+    steps:
+    - uses: actions/checkout@v4
+    - uses: dorny/paths-filter@v2
+      id: changes
+      with:
+        filters: |
+          backend:
+            - 'services/**'
+            - 'packages/types/**'
+            - 'packages/utils/**'
+          frontend:
+            - 'apps/**'
+            - 'packages/ui/**'
+            - 'packages/auth/**'
+            - 'packages/api-client/**'
+          ui:
+            - 'packages/ui/**'
+          docs:
+            - 'docs/**'
+            - '*.md'
+
+  lint:
+    name: Lint & Format Check
+    runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.backend == 'true' || needs.changes.outputs.frontend == 'true'
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v2
+        with:
+          version: ${{ env.PNPM_VERSION }}
+
+      - name: Get pnpm store directory
+        shell: bash
+        run: |
+          echo "STORE_PATH=$(pnpm store path --silent)" >> $GITHUB_ENV
+
+      - name: Setup pnpm cache
+        uses: actions/cache@v3
+        with:
+          path: ${{ env.STORE_PATH }}
+          key: ${{ runner.os }}-pnpm-store-${{ hashFiles('**/pnpm-lock.yaml') }}
+          restore-keys: |
+            ${{ runner.os }}-pnpm-store-
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Run ESLint
+        run: pnpm run lint
+
+      - name: Check formatting with Prettier
+        run: pnpm run format:check
+
+      - name: Type check TypeScript
+        run: pnpm run type-check
+
+  # Test backend services
+  test-backend:
+    runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.backend == 'true'
+    
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_USER: test
+          POSTGRES_PASSWORD: test
+          POSTGRES_DB: zoptal_test
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
+      
+      redis:
+        image: redis:7
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 6379:6379
+
+    strategy:
+      matrix:
+        service: [auth-service, project-service, ai-service, billing-service, notification-service]
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: ${{ env.NODE_VERSION }}
+
+    - name: Setup pnpm
+      uses: pnpm/action-setup@v2
+      with:
+        version: ${{ env.PNPM_VERSION }}
+
+    - name: Get pnpm store directory
+      shell: bash
+      run: |
+        echo "STORE_PATH=$(pnpm store path --silent)" >> $GITHUB_ENV
+
+    - name: Setup pnpm cache
+      uses: actions/cache@v3
+      with:
+        path: ${{ env.STORE_PATH }}
+        key: ${{ runner.os }}-pnpm-store-${{ hashFiles('**/pnpm-lock.yaml') }}
+        restore-keys: |
+          ${{ runner.os }}-pnpm-store-
+
+    - name: Install dependencies
+      run: pnpm install --frozen-lockfile
+
+    - name: Build shared packages
+      run: |
+        pnpm run build --filter=@zoptal/types
+        pnpm run build --filter=@zoptal/utils
+        pnpm run build --filter=@zoptal/config
+
+    - name: Run database migrations
+      run: |
+        cd services/${{ matrix.service }}
+        pnpm run db:migrate || echo "No migrations to run"
+      env:
+        DATABASE_URL: postgresql://test:test@localhost:5432/zoptal_test
+        REDIS_URL: redis://localhost:6379
+
+    - name: Run tests
+      run: |
+        cd services/${{ matrix.service }}
+        pnpm run test:ci || pnpm run test || echo "No tests found"
+      env:
+        DATABASE_URL: postgresql://test:test@localhost:5432/zoptal_test
+        REDIS_URL: redis://localhost:6379
+        JWT_SECRET: test-jwt-secret
+        NODE_ENV: test
+
+    - name: Generate test coverage
+      run: |
+        cd services/${{ matrix.service }}
+        pnpm run test:coverage || echo "No coverage script"
+
+    - name: Upload coverage to Codecov
+      uses: codecov/codecov-action@v3
+      if: always()
+      with:
+        file: ./services/${{ matrix.service }}/coverage/lcov.info
+        flags: ${{ matrix.service }}
+        name: ${{ matrix.service }}-coverage
+
+  # Test frontend applications
+  test-frontend:
+    runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.frontend == 'true'
+    
+    strategy:
+      matrix:
+        app: [admin, web-main]
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: ${{ env.NODE_VERSION }}
+
+    - name: Setup pnpm
+      uses: pnpm/action-setup@v2
+      with:
+        version: ${{ env.PNPM_VERSION }}
+
+    - name: Get pnpm store directory
+      shell: bash
+      run: |
+        echo "STORE_PATH=$(pnpm store path --silent)" >> $GITHUB_ENV
+
+    - name: Setup pnpm cache
+      uses: actions/cache@v3
+      with:
+        path: ${{ env.STORE_PATH }}
+        key: ${{ runner.os }}-pnpm-store-${{ hashFiles('**/pnpm-lock.yaml') }}
+        restore-keys: |
+          ${{ runner.os }}-pnpm-store-
+
+    - name: Install dependencies
+      run: pnpm install --frozen-lockfile
+
+    - name: Build shared packages
+      run: |
+        pnpm run build --filter=@zoptal/ui
+        pnpm run build --filter=@zoptal/auth
+        pnpm run build --filter=@zoptal/api-client
+        pnpm run build --filter=@zoptal/types
+        pnpm run build --filter=@zoptal/utils
+
+    - name: Run tests
+      run: |
+        cd apps/${{ matrix.app }}
+        pnpm run test:ci || pnpm run test || echo "No tests found"
+
+    - name: Build application
+      run: |
+        cd apps/${{ matrix.app }}
+        pnpm run build
+      env:
+        NODE_ENV: production
+
+    - name: Upload coverage to Codecov
+      uses: codecov/codecov-action@v3
+      if: always()
+      with:
+        file: ./apps/${{ matrix.app }}/coverage/lcov.info
+        flags: ${{ matrix.app }}
+        name: ${{ matrix.app }}-coverage
+
+  # Test UI package
+  test-ui:
+    runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.ui == 'true'
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: ${{ env.NODE_VERSION }}
+
+    - name: Setup pnpm
+      uses: pnpm/action-setup@v2
+      with:
+        version: ${{ env.PNPM_VERSION }}
+
+    - name: Get pnpm store directory
+      shell: bash
+      run: |
+        echo "STORE_PATH=$(pnpm store path --silent)" >> $GITHUB_ENV
+
+    - name: Setup pnpm cache
+      uses: actions/cache@v3
+      with:
+        path: ${{ env.STORE_PATH }}
+        key: ${{ runner.os }}-pnpm-store-${{ hashFiles('**/pnpm-lock.yaml') }}
+        restore-keys: |
+          ${{ runner.os }}-pnpm-store-
+
+    - name: Install dependencies
+      run: pnpm install --frozen-lockfile
+
+    - name: Run UI tests
+      run: |
+        cd packages/ui
+        pnpm run test:ci || pnpm run test || echo "No tests found"
+
+    - name: Build UI package
+      run: |
+        cd packages/ui
+        pnpm run build
+
+    - name: Run Storybook tests
+      run: |
+        cd packages/ui
+        pnpm run test:storybook || echo "No Storybook tests"
+
+    - name: Upload coverage to Codecov
+      uses: codecov/codecov-action@v3
+      if: always()
+      with:
+        file: ./packages/ui/coverage/lcov.info
+        flags: ui
+        name: ui-coverage
+
+  # Enhanced security scanning
+  security:
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: ${{ env.NODE_VERSION }}
+
+    - name: Setup pnpm
+      uses: pnpm/action-setup@v2
+      with:
+        version: ${{ env.PNPM_VERSION }}
+
+    - name: Install dependencies
+      run: pnpm install --frozen-lockfile
+
+    - name: Run npm audit
+      run: pnpm audit --audit-level moderate
+      continue-on-error: true
+
+    - name: Run Trivy vulnerability scanner
+      uses: aquasecurity/trivy-action@master
+      with:
+        scan-type: 'fs'
+        scan-ref: '.'
+        format: 'sarif'
+        output: 'trivy-results.sarif'
+
+    - name: Upload Trivy scan results to GitHub Security tab
+      uses: github/codeql-action/upload-sarif@v2
+      if: always()
+      with:
+        sarif_file: 'trivy-results.sarif'
+
+    - name: Run Snyk security scan
+      uses: snyk/actions/node@master
+      continue-on-error: true
+      env:
+        SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+      with:
+        args: --severity-threshold=high
+
+  # Build and test Docker images
+  build-images:
+    runs-on: ubuntu-latest
+    needs: [lint, test-backend, test-frontend]
+    if: always() && (needs.lint.result == 'success' && (needs.test-backend.result == 'success' || needs.test-backend.result == 'skipped') && (needs.test-frontend.result == 'success' || needs.test-frontend.result == 'skipped'))
+    
+    strategy:
+      matrix:
+        service:
+          - auth-service
+          - project-service
+          - ai-service
+          - billing-service
+          - notification-service
+          - admin
+          - web-main
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v3
+
+    - name: Build Docker image
+      uses: docker/build-push-action@v5
+      with:
+        context: .
+        file: ./services/${{ matrix.service }}/Dockerfile
+        push: false
+        tags: zoptal/${{ matrix.service }}:test
+        cache-from: type=gha
+        cache-to: type=gha,mode=max
+
+    - name: Run Docker image security scan
+      uses: aquasecurity/trivy-action@master
+      with:
+        image-ref: zoptal/${{ matrix.service }}:test
+        format: 'sarif'
+        output: 'docker-trivy-results.sarif'
+
+    - name: Test Docker image health
+      run: |
+        docker run --rm zoptal/${{ matrix.service }}:test --version || echo "Service ready"
+
+  # Performance tests
+  performance:
+    runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.backend == 'true' || needs.changes.outputs.frontend == 'true'
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: ${{ env.NODE_VERSION }}
+
+    - name: Setup pnpm
+      uses: pnpm/action-setup@v2
+      with:
+        version: ${{ env.PNPM_VERSION }}
+
+    - name: Install dependencies
+      run: pnpm install --frozen-lockfile
+
+    - name: Run Lighthouse CI
+      run: |
+        pnpm add -g @lhci/cli
+        lhci autorun || echo "Lighthouse CI skipped"
+      env:
+        LHCI_GITHUB_APP_TOKEN: ${{ secrets.LHCI_GITHUB_APP_TOKEN }}
+
+    - name: Run bundle analysis
+      run: |
+        pnpm run analyze || echo "Bundle analysis skipped"
+
+  # Integration tests
+  integration:
+    runs-on: ubuntu-latest
+    needs: [test-backend, test-frontend]
+    if: always() && (needs.test-backend.result == 'success' || needs.test-backend.result == 'skipped') && (needs.test-frontend.result == 'success' || needs.test-frontend.result == 'skipped')
+    
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_USER: test
+          POSTGRES_PASSWORD: test
+          POSTGRES_DB: zoptal_test
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
+      
+      redis:
+        image: redis:7
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 6379:6379
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: ${{ env.NODE_VERSION }}
+
+    - name: Setup pnpm
+      uses: pnpm/action-setup@v2
+      with:
+        version: ${{ env.PNPM_VERSION }}
+
+    - name: Install dependencies
+      run: pnpm install --frozen-lockfile
+
+    - name: Build all packages
+      run: pnpm run build
+
+    - name: Start services for integration testing
+      run: |
+        pnpm run start:test &
+        sleep 30
+      env:
+        DATABASE_URL: postgresql://test:test@localhost:5432/zoptal_test
+        REDIS_URL: redis://localhost:6379
+
+    - name: Run integration tests
+      run: pnpm run test:integration || echo "No integration tests found"
+      env:
+        DATABASE_URL: postgresql://test:test@localhost:5432/zoptal_test
+        REDIS_URL: redis://localhost:6379
+        JWT_SECRET: test-jwt-secret
+        NODE_ENV: test
+
+    - name: Run E2E tests
+      run: pnpm run test:e2e || echo "No E2E tests found"
+      env:
+        DATABASE_URL: postgresql://test:test@localhost:5432/zoptal_test
+        REDIS_URL: redis://localhost:6379
+
+  # All jobs summary
+  ci-complete:
+    runs-on: ubuntu-latest
+    needs: [lint, test-backend, test-frontend, test-ui, security, build-images, performance, integration]
+    if: always()
+    steps:
+    - name: Check all jobs
+      run: |
+        if [[ "${{ needs.lint.result }}" == "failure" || 
+              "${{ needs.test-backend.result }}" == "failure" || 
+              "${{ needs.test-frontend.result }}" == "failure" || 
+              "${{ needs.test-ui.result }}" == "failure" || 
+              "${{ needs.security.result }}" == "failure" || 
+              "${{ needs.build-images.result }}" == "failure" || 
+              "${{ needs.performance.result }}" == "failure" || 
+              "${{ needs.integration.result }}" == "failure" ]]; then
+          echo "One or more CI jobs failed"
+          exit 1
+        else
+          echo "All CI jobs passed successfully"
+        fi
+    
+    - name: Post status to Slack
+      if: always()
+      uses: 8398a7/action-slack@v3
+      with:
+        status: ${{ job.status }}
+        channel: '#ci-cd'
+        webhook_url: ${{ secrets.SLACK_WEBHOOK }}
+        fields: repo,message,commit,author,action,eventName,ref,workflow

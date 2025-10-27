@@ -1,0 +1,891 @@
+openapi: 3.0.3
+info:
+  title: Zoptal Analytics Service API
+  description: |
+    Comprehensive analytics API for tracking user behavior, performance metrics,
+    and generating insights for the Zoptal platform.
+    
+    This service provides detailed analytics capabilities including user tracking,
+    event logging, performance monitoring, and business intelligence.
+    
+  version: 1.0.0
+  contact:
+    name: Zoptal Analytics Support
+    email: analytics@zoptal.com
+
+servers:
+  - url: https://api.zoptal.com/analytics
+    description: Production server
+  - url: http://localhost:4006
+    description: Local development server
+
+security:
+  - BearerAuth: []
+
+tags:
+  - name: Events
+    description: Event tracking and logging
+  - name: Users
+    description: User analytics and behavior
+  - name: Projects
+    description: Project-specific analytics
+  - name: Performance
+    description: Performance metrics and monitoring
+  - name: Reports
+    description: Analytics reports and insights
+
+paths:
+  /events:
+    post:
+      tags:
+        - Events
+      summary: Track event
+      description: Track a single analytics event
+      operationId: trackEvent
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TrackEventRequest'
+      responses:
+        '200':
+          description: Event tracked successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TrackEventResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '500':
+          $ref: '#/components/responses/ServerError'
+
+  /events/batch:
+    post:
+      tags:
+        - Events
+      summary: Track multiple events
+      description: Track multiple analytics events in a single request
+      operationId: trackBatchEvents
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BatchEventsRequest'
+      responses:
+        '200':
+          description: Events tracked successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BatchEventsResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '500':
+          $ref: '#/components/responses/ServerError'
+
+  /users/{userId}/activity:
+    get:
+      tags:
+        - Users
+      summary: Get user activity
+      description: Get activity timeline for a specific user
+      operationId: getUserActivity
+      parameters:
+        - name: userId
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: startDate
+          in: query
+          schema:
+            type: string
+            format: date
+        - name: endDate
+          in: query
+          schema:
+            type: string
+            format: date
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 50
+            maximum: 1000
+      responses:
+        '200':
+          description: User activity retrieved successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserActivityResponse'
+
+  /users/{userId}/metrics:
+    get:
+      tags:
+        - Users
+      summary: Get user metrics
+      description: Get aggregated metrics for a specific user
+      operationId: getUserMetrics
+      parameters:
+        - name: userId
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: period
+          in: query
+          schema:
+            type: string
+            enum: [day, week, month, quarter, year]
+            default: month
+        - name: metrics
+          in: query
+          schema:
+            type: array
+            items:
+              type: string
+              enum: [sessions, pageviews, events, time_spent, ai_usage]
+      responses:
+        '200':
+          description: User metrics retrieved successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserMetricsResponse'
+
+  /projects/{projectId}/analytics:
+    get:
+      tags:
+        - Projects
+      summary: Get project analytics
+      description: Get analytics data for a specific project
+      operationId: getProjectAnalytics
+      parameters:
+        - name: projectId
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: period
+          in: query
+          schema:
+            type: string
+            enum: [day, week, month, quarter, year]
+            default: month
+        - name: metrics
+          in: query
+          schema:
+            type: array
+            items:
+              type: string
+      responses:
+        '200':
+          description: Project analytics retrieved successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProjectAnalyticsResponse'
+
+  /performance/metrics:
+    get:
+      tags:
+        - Performance
+      summary: Get performance metrics
+      description: Get system performance metrics
+      operationId: getPerformanceMetrics
+      parameters:
+        - name: service
+          in: query
+          schema:
+            type: string
+            enum: [auth, project, ai, billing, notification, analytics]
+        - name: startTime
+          in: query
+          schema:
+            type: string
+            format: date-time
+        - name: endTime
+          in: query
+          schema:
+            type: string
+            format: date-time
+        - name: granularity
+          in: query
+          schema:
+            type: string
+            enum: [minute, hour, day]
+            default: hour
+      responses:
+        '200':
+          description: Performance metrics retrieved successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PerformanceMetricsResponse'
+
+  /reports/dashboard:
+    get:
+      tags:
+        - Reports
+      summary: Get dashboard data
+      description: Get aggregated data for analytics dashboard
+      operationId: getDashboardData
+      parameters:
+        - name: period
+          in: query
+          schema:
+            type: string
+            enum: [today, week, month, quarter, year]
+            default: month
+        - name: timezone
+          in: query
+          schema:
+            type: string
+            default: UTC
+      responses:
+        '200':
+          description: Dashboard data retrieved successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DashboardDataResponse'
+
+  /reports/export:
+    post:
+      tags:
+        - Reports
+      summary: Export analytics report
+      description: Generate and export an analytics report
+      operationId: exportReport
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ExportReportRequest'
+      responses:
+        '200':
+          description: Report export initiated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ExportReportResponse'
+
+  /funnel:
+    post:
+      tags:
+        - Reports
+      summary: Create funnel analysis
+      description: Create a funnel analysis for event sequences
+      operationId: createFunnelAnalysis
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/FunnelAnalysisRequest'
+      responses:
+        '200':
+          description: Funnel analysis created successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FunnelAnalysisResponse'
+
+components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  schemas:
+    TrackEventRequest:
+      type: object
+      required:
+        - event
+        - userId
+      properties:
+        event:
+          type: string
+          description: Event name
+        userId:
+          type: string
+          description: User ID who triggered the event
+        sessionId:
+          type: string
+          description: Session ID
+        projectId:
+          type: string
+          description: Associated project ID
+        properties:
+          type: object
+          description: Event properties and metadata
+        timestamp:
+          type: string
+          format: date-time
+          description: Event timestamp (defaults to current time)
+        userAgent:
+          type: string
+          description: User agent string
+        ipAddress:
+          type: string
+          description: User IP address
+        referrer:
+          type: string
+          description: Referrer URL
+        page:
+          type: string
+          description: Current page/route
+
+    BatchEventsRequest:
+      type: object
+      required:
+        - events
+      properties:
+        events:
+          type: array
+          items:
+            $ref: '#/components/schemas/TrackEventRequest'
+          maxItems: 100
+
+    AnalyticsEvent:
+      type: object
+      properties:
+        id:
+          type: string
+        event:
+          type: string
+        userId:
+          type: string
+        sessionId:
+          type: string
+        projectId:
+          type: string
+        properties:
+          type: object
+        timestamp:
+          type: string
+          format: date-time
+        userAgent:
+          type: string
+        ipAddress:
+          type: string
+        referrer:
+          type: string
+        page:
+          type: string
+        processed:
+          type: boolean
+        createdAt:
+          type: string
+          format: date-time
+
+    UserActivity:
+      type: object
+      properties:
+        events:
+          type: array
+          items:
+            $ref: '#/components/schemas/AnalyticsEvent'
+        sessions:
+          type: array
+          items:
+            $ref: '#/components/schemas/UserSession'
+        summary:
+          $ref: '#/components/schemas/ActivitySummary'
+
+    UserSession:
+      type: object
+      properties:
+        sessionId:
+          type: string
+        userId:
+          type: string
+        startTime:
+          type: string
+          format: date-time
+        endTime:
+          type: string
+          format: date-time
+        duration:
+          type: integer
+          description: Session duration in seconds
+        pageviews:
+          type: integer
+        events:
+          type: integer
+        device:
+          $ref: '#/components/schemas/DeviceInfo'
+        location:
+          $ref: '#/components/schemas/LocationInfo'
+
+    DeviceInfo:
+      type: object
+      properties:
+        type:
+          type: string
+          enum: [desktop, mobile, tablet]
+        os:
+          type: string
+        browser:
+          type: string
+        version:
+          type: string
+        screenResolution:
+          type: string
+
+    LocationInfo:
+      type: object
+      properties:
+        country:
+          type: string
+        region:
+          type: string
+        city:
+          type: string
+        timezone:
+          type: string
+        coordinates:
+          type: object
+          properties:
+            lat:
+              type: number
+            lng:
+              type: number
+
+    ActivitySummary:
+      type: object
+      properties:
+        totalEvents:
+          type: integer
+        totalSessions:
+          type: integer
+        totalDuration:
+          type: integer
+        averageSessionDuration:
+          type: number
+        topEvents:
+          type: array
+          items:
+            type: object
+            properties:
+              event:
+                type: string
+              count:
+                type: integer
+
+    UserMetrics:
+      type: object
+      properties:
+        userId:
+          type: string
+        period:
+          type: string
+        metrics:
+          type: object
+          properties:
+            sessions:
+              type: integer
+            pageviews:
+              type: integer
+            events:
+              type: integer
+            timeSpent:
+              type: integer
+              description: Total time spent in seconds
+            aiUsage:
+              type: object
+              properties:
+                requests:
+                  type: integer
+                tokens:
+                  type: integer
+                cost:
+                  type: number
+        trends:
+          type: object
+          properties:
+            sessions:
+              $ref: '#/components/schemas/MetricTrend'
+            pageviews:
+              $ref: '#/components/schemas/MetricTrend'
+            events:
+              $ref: '#/components/schemas/MetricTrend'
+
+    MetricTrend:
+      type: object
+      properties:
+        current:
+          type: number
+        previous:
+          type: number
+        change:
+          type: number
+          description: Percentage change
+        direction:
+          type: string
+          enum: [up, down, stable]
+
+    ProjectAnalytics:
+      type: object
+      properties:
+        projectId:
+          type: string
+        period:
+          type: string
+        overview:
+          type: object
+          properties:
+            totalUsers:
+              type: integer
+            activeUsers:
+              type: integer
+            totalSessions:
+              type: integer
+            totalEvents:
+              type: integer
+            averageSessionDuration:
+              type: number
+        userEngagement:
+          type: object
+          properties:
+            newUsers:
+              type: integer
+            returningUsers:
+              type: integer
+            retentionRate:
+              type: number
+        featureUsage:
+          type: array
+          items:
+            type: object
+            properties:
+              feature:
+                type: string
+              usage:
+                type: integer
+              percentage:
+                type: number
+        timeDistribution:
+          type: array
+          items:
+            type: object
+            properties:
+              hour:
+                type: integer
+              sessions:
+                type: integer
+
+    PerformanceMetrics:
+      type: object
+      properties:
+        service:
+          type: string
+        timeRange:
+          type: object
+          properties:
+            start:
+              type: string
+              format: date-time
+            end:
+              type: string
+              format: date-time
+        metrics:
+          type: object
+          properties:
+            requestCount:
+              type: integer
+            errorRate:
+              type: number
+            averageResponseTime:
+              type: number
+            p95ResponseTime:
+              type: number
+            throughput:
+              type: number
+        timeSeries:
+          type: array
+          items:
+            type: object
+            properties:
+              timestamp:
+                type: string
+                format: date-time
+              requestCount:
+                type: integer
+              errorRate:
+                type: number
+              responseTime:
+                type: number
+
+    DashboardData:
+      type: object
+      properties:
+        overview:
+          type: object
+          properties:
+            totalUsers:
+              type: integer
+            activeUsers:
+              type: integer
+            totalSessions:
+              type: integer
+            totalEvents:
+              type: integer
+            revenue:
+              type: number
+        charts:
+          type: object
+          properties:
+            userGrowth:
+              type: array
+              items:
+                type: object
+                properties:
+                  date:
+                    type: string
+                    format: date
+                  users:
+                    type: integer
+            eventVolume:
+              type: array
+              items:
+                type: object
+                properties:
+                  event:
+                    type: string
+                  count:
+                    type: integer
+            geographicDistribution:
+              type: array
+              items:
+                type: object
+                properties:
+                  country:
+                    type: string
+                  users:
+                    type: integer
+                  percentage:
+                    type: number
+
+    ExportReportRequest:
+      type: object
+      required:
+        - type
+        - format
+      properties:
+        type:
+          type: string
+          enum: [users, events, sessions, performance, custom]
+        format:
+          type: string
+          enum: [csv, json, xlsx, pdf]
+        period:
+          type: object
+          properties:
+            start:
+              type: string
+              format: date
+            end:
+              type: string
+              format: date
+        filters:
+          type: object
+          description: Report filters
+        includeDetails:
+          type: boolean
+          default: false
+        emailTo:
+          type: array
+          items:
+            type: string
+            format: email
+          description: Email addresses to send the report to
+
+    FunnelAnalysisRequest:
+      type: object
+      required:
+        - name
+        - steps
+      properties:
+        name:
+          type: string
+          description: Funnel name
+        description:
+          type: string
+        steps:
+          type: array
+          items:
+            type: object
+            properties:
+              name:
+                type: string
+              event:
+                type: string
+              filters:
+                type: object
+          minItems: 2
+          maxItems: 10
+        period:
+          type: object
+          properties:
+            start:
+              type: string
+              format: date
+            end:
+              type: string
+              format: date
+        cohortType:
+          type: string
+          enum: [daily, weekly, monthly]
+          default: daily
+
+    FunnelAnalysisResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+        data:
+          type: object
+          properties:
+            funnelId:
+              type: string
+            name:
+              type: string
+            steps:
+              type: array
+              items:
+                type: object
+                properties:
+                  step:
+                    type: integer
+                  name:
+                    type: string
+                  users:
+                    type: integer
+                  conversionRate:
+                    type: number
+                  dropoffRate:
+                    type: number
+            overall:
+              type: object
+              properties:
+                totalUsers:
+                  type: integer
+                conversionRate:
+                  type: number
+                averageTimeToConvert:
+                  type: number
+
+    TrackEventResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+        eventId:
+          type: string
+
+    BatchEventsResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+        processed:
+          type: integer
+        failed:
+          type: integer
+        eventIds:
+          type: array
+          items:
+            type: string
+
+    UserActivityResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+        data:
+          $ref: '#/components/schemas/UserActivity'
+
+    UserMetricsResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+        data:
+          $ref: '#/components/schemas/UserMetrics'
+
+    ProjectAnalyticsResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+        data:
+          $ref: '#/components/schemas/ProjectAnalytics'
+
+    PerformanceMetricsResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+        data:
+          $ref: '#/components/schemas/PerformanceMetrics'
+
+    DashboardDataResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+        data:
+          $ref: '#/components/schemas/DashboardData'
+
+    ExportReportResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+        data:
+          type: object
+          properties:
+            reportId:
+              type: string
+            status:
+              type: string
+              enum: [queued, processing, completed, failed]
+            downloadUrl:
+              type: string
+              description: Available when status is completed
+            estimatedCompletion:
+              type: string
+              format: date-time
+
+  responses:
+    BadRequest:
+      description: Bad request
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              success:
+                type: boolean
+                default: false
+              error:
+                type: string
+
+    ServerError:
+      description: Internal server error
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              success:
+                type: boolean
+                default: false
+              error:
+                type: string

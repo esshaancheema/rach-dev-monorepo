@@ -1,0 +1,178 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: zoptal-billing-service
+  namespace: zoptal
+  labels:
+    app: billing-service
+    component: backend
+    service: billing
+spec:
+  replicas: 2
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  selector:
+    matchLabels:
+      app: billing-service
+  template:
+    metadata:
+      labels:
+        app: billing-service
+        component: backend
+        service: billing
+    spec:
+      containers:
+      - name: billing-service
+        image: zoptal/billing-service:latest
+        ports:
+        - containerPort: 4004
+          name: http
+        env:
+        - name: NODE_ENV
+          valueFrom:
+            configMapKeyRef:
+              name: zoptal-config
+              key: NODE_ENV
+        - name: PORT
+          value: "4004"
+        - name: DATABASE_URL
+          valueFrom:
+            secretKeyRef:
+              name: zoptal-secrets
+              key: DATABASE_URL
+        - name: REDIS_URL
+          valueFrom:
+            secretKeyRef:
+              name: zoptal-secrets
+              key: REDIS_URL
+        - name: AUTH_SERVICE_URL
+          valueFrom:
+            configMapKeyRef:
+              name: zoptal-config
+              key: AUTH_SERVICE_URL
+        - name: JWT_SECRET
+          valueFrom:
+            secretKeyRef:
+              name: zoptal-secrets
+              key: JWT_SECRET
+        - name: STRIPE_SECRET_KEY
+          valueFrom:
+            secretKeyRef:
+              name: zoptal-secrets
+              key: STRIPE_SECRET_KEY
+        - name: STRIPE_PUBLISHABLE_KEY
+          valueFrom:
+            secretKeyRef:
+              name: zoptal-secrets
+              key: STRIPE_PUBLISHABLE_KEY
+        - name: STRIPE_WEBHOOK_SECRET
+          valueFrom:
+            secretKeyRef:
+              name: zoptal-secrets
+              key: STRIPE_WEBHOOK_SECRET
+        - name: STRIPE_PRICE_API_REQUESTS
+          valueFrom:
+            secretKeyRef:
+              name: zoptal-secrets
+              key: STRIPE_PRICE_API_REQUESTS
+        - name: STRIPE_PRICE_CODE_GENERATIONS
+          valueFrom:
+            secretKeyRef:
+              name: zoptal-secrets
+              key: STRIPE_PRICE_CODE_GENERATIONS
+        resources:
+          requests:
+            memory: "256Mi"
+            cpu: "250m"
+          limits:
+            memory: "512Mi"
+            cpu: "500m"
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 4004
+          initialDelaySeconds: 30
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+        readinessProbe:
+          httpGet:
+            path: /health/ready
+            port: 4004
+          initialDelaySeconds: 10
+          periodSeconds: 5
+          timeoutSeconds: 3
+          failureThreshold: 3
+      initContainers:
+      - name: wait-for-auth-service
+        image: curlimages/curl:latest
+        command:
+        - sh
+        - -c
+        - |
+          until curl -f http://zoptal-auth-service:4001/health; do
+            echo "Waiting for Auth Service..."
+            sleep 5
+          done
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: zoptal-billing-service
+  namespace: zoptal
+  labels:
+    app: billing-service
+    component: backend
+    service: billing
+spec:
+  ports:
+  - port: 4004
+    targetPort: 4004
+    protocol: TCP
+    name: http
+  selector:
+    app: billing-service
+  type: ClusterIP
+
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: zoptal-billing-service-hpa
+  namespace: zoptal
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: zoptal-billing-service
+  minReplicas: 2
+  maxReplicas: 6
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 70
+  - type: Resource
+    resource:
+      name: memory
+      target:
+        type: Utilization
+        averageUtilization: 80
+
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: zoptal-billing-service-pdb
+  namespace: zoptal
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: billing-service

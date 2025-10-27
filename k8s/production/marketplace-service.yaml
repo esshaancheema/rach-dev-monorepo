@@ -1,0 +1,391 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: marketplace-service
+  namespace: zoptal
+  labels:
+    app: marketplace-service
+    component: backend
+    tier: application
+spec:
+  replicas: 3
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  selector:
+    matchLabels:
+      app: marketplace-service
+  template:
+    metadata:
+      labels:
+        app: marketplace-service
+        component: backend
+        tier: application
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "3005"
+        prometheus.io/path: "/metrics"
+    spec:
+      serviceAccountName: marketplace-service
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1001
+        fsGroup: 1001
+      containers:
+      - name: marketplace-service
+        image: zoptal/marketplace-service:latest
+        imagePullPolicy: Always
+        ports:
+        - containerPort: 3005
+          name: http
+          protocol: TCP
+        env:
+        - name: NODE_ENV
+          value: "production"
+        - name: PORT
+          value: "3005"
+        - name: DATABASE_URL
+          valueFrom:
+            secretKeyRef:
+              name: marketplace-secrets
+              key: database-url
+        - name: REDIS_HOST
+          value: "redis-cluster"
+        - name: REDIS_PORT
+          value: "6379"
+        - name: REDIS_DB
+          value: "3"
+        - name: REDIS_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: redis-secret
+              key: password
+        - name: JWT_SECRET
+          valueFrom:
+            secretKeyRef:
+              name: marketplace-secrets
+              key: jwt-secret
+        - name: ENCRYPTION_KEY
+          valueFrom:
+            secretKeyRef:
+              name: marketplace-secrets
+              key: encryption-key
+        - name: CORS_ORIGINS
+          value: "https://app.zoptal.com,https://marketplace.zoptal.com,https://admin.zoptal.com"
+        - name: RATE_LIMIT_WINDOW_MS
+          value: "900000"
+        - name: RATE_LIMIT_MAX
+          value: "1000"
+        - name: MAX_FILE_SIZE
+          value: "104857600"
+        - name: MAX_INTEGRATIONS_PER_DEVELOPER
+          value: "100"
+        - name: STRIPE_SECRET_KEY
+          valueFrom:
+            secretKeyRef:
+              name: marketplace-secrets
+              key: stripe-secret-key
+        - name: EMAIL_HOST
+          value: "smtp.sendgrid.net"
+        - name: EMAIL_USER
+          valueFrom:
+            secretKeyRef:
+              name: marketplace-secrets
+              key: email-user
+        - name: EMAIL_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: marketplace-secrets
+              key: email-password
+        - name: CDN_ACCESS_KEY_ID
+          valueFrom:
+            secretKeyRef:
+              name: marketplace-secrets
+              key: cdn-access-key-id
+        - name: CDN_SECRET_ACCESS_KEY
+          valueFrom:
+            secretKeyRef:
+              name: marketplace-secrets
+              key: cdn-secret-access-key
+        resources:
+          requests:
+            memory: "512Mi"
+            cpu: "200m"
+          limits:
+            memory: "1Gi"
+            cpu: "1000m"
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 3005
+            scheme: HTTP
+          initialDelaySeconds: 30
+          periodSeconds: 30
+          timeoutSeconds: 5
+          failureThreshold: 3
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 3005
+            scheme: HTTP
+          initialDelaySeconds: 10
+          periodSeconds: 10
+          timeoutSeconds: 3
+          failureThreshold: 3
+          successThreshold: 1
+        volumeMounts:
+        - name: logs
+          mountPath: /app/logs
+        - name: uploads
+          mountPath: /app/uploads
+        - name: temp
+          mountPath: /app/temp
+        - name: config
+          mountPath: /app/config
+          readOnly: true
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
+          readOnlyRootFilesystem: false
+      volumes:
+      - name: logs
+        emptyDir: {}
+      - name: uploads
+        persistentVolumeClaim:
+          claimName: marketplace-uploads-pvc
+      - name: temp
+        emptyDir: {}
+      - name: config
+        configMap:
+          name: marketplace-config
+      initContainers:
+      - name: wait-for-dependencies
+        image: busybox:1.35
+        command: ['sh', '-c']
+        args:
+        - |
+          until nc -z redis-cluster 6379; do
+            echo "Waiting for Redis..."
+            sleep 2
+          done
+          echo "Dependencies are ready!"
+        securityContext:
+          runAsNonRoot: true
+          runAsUser: 1001
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
+          readOnlyRootFilesystem: true
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: marketplace-service
+  namespace: zoptal
+  labels:
+    app: marketplace-service
+  annotations:
+    prometheus.io/scrape: "true"
+    prometheus.io/port: "3005"
+    prometheus.io/path: "/metrics"
+spec:
+  type: ClusterIP
+  ports:
+  - port: 80
+    targetPort: 3005
+    protocol: TCP
+    name: http
+  selector:
+    app: marketplace-service
+
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: marketplace-service
+  namespace: zoptal
+
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: marketplace-config
+  namespace: zoptal
+data:
+  app.json: |
+    {
+      "service": "marketplace-service",
+      "version": "1.0.0",
+      "features": {
+        "maxIntegrationsPerDeveloper": 100,
+        "maxFileSize": "100MB",
+        "securityScanning": true,
+        "packageValidation": true,
+        "webhookDelivery": true,
+        "oauthSupport": true,
+        "reviewSystem": true,
+        "analyticsTracking": true
+      },
+      "upload": {
+        "allowedTypes": ["application/zip", "application/x-zip-compressed", "application/tar+gzip"],
+        "maxFileSize": 104857600,
+        "virusScanEnabled": true
+      },
+      "security": {
+        "packageScanEnabled": true,
+        "malwareDetection": true,
+        "codeAnalysis": true,
+        "permissionValidation": true
+      },
+      "marketplace": {
+        "approvalRequired": true,
+        "reviewTimeout": 72,
+        "featuredIntegrations": true,
+        "categories": [
+          "productivity", "communication", "analytics", 
+          "security", "finance", "marketing", "sales", 
+          "support", "development", "design", "automation", "data"
+        ]
+      }
+    }
+
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: marketplace-secrets
+  namespace: zoptal
+type: Opaque
+data:
+  database-url: cG9zdGdyZXNxbDovL3VzZXI6cGFzc3dvcmRAbG9jYWxob3N0OjU0MzIvbWFya2V0cGxhY2U= # Base64 encoded
+  jwt-secret: eW91ci1zdXBlci1zZWNyZXQtand0LWtleS1mb3ItbWFya2V0cGxhY2UtcHJvZHVjdGlvbg== # Base64 encoded
+  encryption-key: eW91ci0zMi1jaGFyYWN0ZXItZW5jcnlwdGlvbi1rZXktaGVyZQ== # Base64 encoded
+  stripe-secret-key: c2tfdGVzdF95b3VyX3N0cmlwZV9zZWNyZXRfa2V5X2hlcmU= # Base64 encoded
+  email-user: c210cF91c2VybmFtZQ== # Base64 encoded
+  email-password: c210cF9wYXNzd29yZA== # Base64 encoded
+  cdn-access-key-id: eW91cl9jZG5fYWNjZXNzX2tleQ== # Base64 encoded
+  cdn-secret-access-key: eW91cl9jZG5fc2VjcmV0X2FjY2Vzc19rZXk= # Base64 encoded
+
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: marketplace-uploads-pvc
+  namespace: zoptal
+spec:
+  accessModes:
+    - ReadWriteMany
+  resources:
+    requests:
+      storage: 100Gi
+  storageClassName: fast-ssd
+
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: marketplace-service-ingress
+  namespace: zoptal
+  annotations:
+    kubernetes.io/ingress.class: "nginx"
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/force-ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/cors-allow-origin: "https://marketplace.zoptal.com,https://app.zoptal.com"
+    nginx.ingress.kubernetes.io/cors-allow-methods: "GET, POST, PUT, DELETE, OPTIONS"
+    nginx.ingress.kubernetes.io/cors-allow-headers: "Content-Type, Authorization, X-Requested-With, X-Api-Key"
+    nginx.ingress.kubernetes.io/rate-limit: "1000"
+    nginx.ingress.kubernetes.io/rate-limit-window: "1m"
+    nginx.ingress.kubernetes.io/proxy-body-size: "100m"
+    cert-manager.io/cluster-issuer: "letsencrypt-prod"
+spec:
+  tls:
+  - hosts:
+    - marketplace.zoptal.com
+    secretName: marketplace-tls-secret
+  rules:
+  - host: marketplace.zoptal.com
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: marketplace-service
+            port:
+              number: 80
+
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: marketplace-service-hpa
+  namespace: zoptal
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: marketplace-service
+  minReplicas: 3
+  maxReplicas: 20
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 70
+  - type: Resource
+    resource:
+      name: memory
+      target:
+        type: Utilization
+        averageUtilization: 80
+  behavior:
+    scaleUp:
+      stabilizationWindowSeconds: 60
+      policies:
+      - type: Percent
+        value: 50
+        periodSeconds: 60
+    scaleDown:
+      stabilizationWindowSeconds: 300
+      policies:
+      - type: Percent
+        value: 10
+        periodSeconds: 60
+
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: marketplace-service-pdb
+  namespace: zoptal
+spec:
+  minAvailable: 2
+  selector:
+    matchLabels:
+      app: marketplace-service
+
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: marketplace-service-monitor
+  namespace: zoptal
+  labels:
+    app: marketplace-service
+spec:
+  selector:
+    matchLabels:
+      app: marketplace-service
+  endpoints:
+  - port: http
+    path: /metrics
+    interval: 30s
+    scrapeTimeout: 10s

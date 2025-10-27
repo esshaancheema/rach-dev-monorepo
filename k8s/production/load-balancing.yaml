@@ -1,0 +1,675 @@
+# Load Balancing and Auto-scaling Configuration
+# Implements HPA, VPA, KEDA, and advanced load balancing
+
+---
+# Horizontal Pod Autoscaler for Auth Service
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: auth-service-hpa
+  namespace: zoptal-production
+  labels:
+    app.kubernetes.io/name: auth-service
+    app.kubernetes.io/component: autoscaler
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: auth-service
+  minReplicas: 3
+  maxReplicas: 20
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 70
+  - type: Resource
+    resource:
+      name: memory
+      target:
+        type: Utilization
+        averageUtilization: 80
+  - type: Pods
+    pods:
+      metric:
+        name: http_requests_per_second
+      target:
+        type: AverageValue
+        averageValue: "100"
+  behavior:
+    scaleDown:
+      stabilizationWindowSeconds: 300
+      policies:
+      - type: Percent
+        value: 50
+        periodSeconds: 60
+      - type: Pods
+        value: 2
+        periodSeconds: 60
+      selectPolicy: Min
+    scaleUp:
+      stabilizationWindowSeconds: 60
+      policies:
+      - type: Percent
+        value: 100
+        periodSeconds: 15
+      - type: Pods
+        value: 4
+        periodSeconds: 60
+      selectPolicy: Max
+
+---
+# Horizontal Pod Autoscaler for Project Service
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: project-service-hpa
+  namespace: zoptal-production
+  labels:
+    app.kubernetes.io/name: project-service
+    app.kubernetes.io/component: autoscaler
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: project-service
+  minReplicas: 3
+  maxReplicas: 15
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 75
+  - type: Resource
+    resource:
+      name: memory
+      target:
+        type: Utilization
+        averageUtilization: 85
+  - type: External
+    external:
+      metric:
+        name: database_connections
+      target:
+        type: AverageValue
+        averageValue: "50"
+  behavior:
+    scaleDown:
+      stabilizationWindowSeconds: 300
+      policies:
+      - type: Percent
+        value: 25
+        periodSeconds: 60
+    scaleUp:
+      stabilizationWindowSeconds: 60
+      policies:
+      - type: Percent
+        value: 50
+        periodSeconds: 30
+
+---
+# Horizontal Pod Autoscaler for AI Service
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: ai-service-hpa
+  namespace: zoptal-production
+  labels:
+    app.kubernetes.io/name: ai-service
+    app.kubernetes.io/component: autoscaler
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: ai-service
+  minReplicas: 2
+  maxReplicas: 10
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 60
+  - type: Resource
+    resource:
+      name: memory
+      target:
+        type: Utilization
+        averageUtilization: 70
+  - type: Pods
+    pods:
+      metric:
+        name: ai_requests_in_queue
+      target:
+        type: AverageValue
+        averageValue: "10"
+  behavior:
+    scaleDown:
+      stabilizationWindowSeconds: 600  # Longer stabilization for AI workloads
+      policies:
+      - type: Pods
+        value: 1
+        periodSeconds: 120
+    scaleUp:
+      stabilizationWindowSeconds: 30
+      policies:
+      - type: Pods
+        value: 2
+        periodSeconds: 30
+
+---
+# Vertical Pod Autoscaler for Auth Service
+apiVersion: autoscaling.k8s.io/v1
+kind: VerticalPodAutoscaler
+metadata:
+  name: auth-service-vpa
+  namespace: zoptal-production
+  labels:
+    app.kubernetes.io/name: auth-service
+    app.kubernetes.io/component: vpa
+spec:
+  targetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: auth-service
+  updatePolicy:
+    updateMode: "Auto"
+  resourcePolicy:
+    containerPolicies:
+    - containerName: auth-service
+      minAllowed:
+        cpu: 100m
+        memory: 128Mi
+      maxAllowed:
+        cpu: 2
+        memory: 4Gi
+      controlledResources: ["cpu", "memory"]
+
+---
+# KEDA ScaledObject for Queue-based Scaling
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: notification-service-keda
+  namespace: zoptal-production
+  labels:
+    app.kubernetes.io/name: notification-service
+    app.kubernetes.io/component: keda-scaler
+spec:
+  scaleTargetRef:
+    name: notification-service
+  minReplicaCount: 2
+  maxReplicaCount: 20
+  cooldownPeriod: 300
+  pollingInterval: 30
+  triggers:
+  - type: redis
+    metadata:
+      address: redis-master:6379
+      listName: notification_queue
+      listLength: "5"
+      authenticationRef:
+        name: redis-auth
+  - type: prometheus
+    metadata:
+      serverAddress: http://prometheus:9090
+      metricName: notification_processing_time
+      threshold: "100"
+      query: avg(rate(notification_processing_duration_seconds[5m]))
+
+---
+# KEDA TriggerAuthentication for Redis
+apiVersion: keda.sh/v1alpha1
+kind: TriggerAuthentication
+metadata:
+  name: redis-auth
+  namespace: zoptal-production
+spec:
+  secretTargetRef:
+  - parameter: password
+    name: redis-credentials
+    key: password
+
+---
+# Custom Metrics Server Configuration
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: custom-metrics-config
+  namespace: zoptal-production
+  labels:
+    app.kubernetes.io/name: custom-metrics
+    app.kubernetes.io/component: config
+data:
+  config.yaml: |
+    rules:
+    - seriesQuery: 'http_requests_per_second{namespace!="",pod!=""}'
+      resources:
+        overrides:
+          namespace: {resource: "namespace"}
+          pod: {resource: "pod"}
+      name:
+        matches: "^(.*)_per_second$"
+        as: "${1}_rate"
+      metricsQuery: 'sum(<<.Series>>{<<.LabelMatchers>>}) by (<<.GroupBy>>)'
+    
+    - seriesQuery: 'database_connections{namespace!="",pod!=""}'
+      resources:
+        overrides:
+          namespace: {resource: "namespace"}
+          pod: {resource: "pod"}
+      name:
+        as: "database_connections"
+      metricsQuery: 'avg(<<.Series>>{<<.LabelMatchers>>}) by (<<.GroupBy>>)'
+    
+    - seriesQuery: 'ai_requests_in_queue{namespace!="",pod!=""}'
+      resources:
+        overrides:
+          namespace: {resource: "namespace"}
+          pod: {resource: "pod"}
+      name:
+        as: "ai_requests_queue_length"
+      metricsQuery: 'sum(<<.Series>>{<<.LabelMatchers>>}) by (<<.GroupBy>>)'
+
+---
+# Load Balancer Service with Session Affinity
+apiVersion: v1
+kind: Service
+metadata:
+  name: zoptal-load-balancer
+  namespace: zoptal-production
+  labels:
+    app.kubernetes.io/name: zoptal-load-balancer
+    app.kubernetes.io/component: load-balancer
+  annotations:
+    service.beta.kubernetes.io/aws-load-balancer-type: "nlb"
+    service.beta.kubernetes.io/aws-load-balancer-cross-zone-load-balancing-enabled: "true"
+    service.beta.kubernetes.io/aws-load-balancer-backend-protocol: "tcp"
+    service.beta.kubernetes.io/aws-load-balancer-connection-idle-timeout: "60"
+    service.beta.kubernetes.io/aws-load-balancer-connection-draining-enabled: "true"
+    service.beta.kubernetes.io/aws-load-balancer-connection-draining-timeout: "300"
+    service.beta.kubernetes.io/aws-load-balancer-healthcheck-interval: "10"
+    service.beta.kubernetes.io/aws-load-balancer-healthcheck-timeout: "6"
+    service.beta.kubernetes.io/aws-load-balancer-healthcheck-healthy-threshold: "2"
+    service.beta.kubernetes.io/aws-load-balancer-healthcheck-unhealthy-threshold: "2"
+spec:
+  type: LoadBalancer
+  sessionAffinity: ClientIP
+  sessionAffinityConfig:
+    clientIP:
+      timeoutSeconds: 10800  # 3 hours
+  ports:
+  - name: http
+    port: 80
+    targetPort: 8080
+    protocol: TCP
+  - name: https
+    port: 443
+    targetPort: 8443
+    protocol: TCP
+  selector:
+    app.kubernetes.io/component: ingress
+
+---
+# Nginx Ingress Controller with Load Balancing
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: nginx-ingress-config
+  namespace: zoptal-production
+  labels:
+    app.kubernetes.io/name: nginx-ingress
+    app.kubernetes.io/component: config
+data:
+  # Load balancing configuration
+  upstream-hash-by: "$request_uri"
+  load-balance: "ewma"  # Exponentially Weighted Moving Average
+  
+  # Connection settings
+  proxy-connect-timeout: "10"
+  proxy-send-timeout: "300"
+  proxy-read-timeout: "300"
+  proxy-body-size: "50m"
+  
+  # Keepalive settings
+  upstream-keepalive-connections: "32"
+  upstream-keepalive-timeout: "60"
+  upstream-keepalive-requests: "100"
+  
+  # Rate limiting
+  rate-limit: "1000"
+  rate-limit-window: "1m"
+  
+  # SSL settings
+  ssl-protocols: "TLSv1.2 TLSv1.3"
+  ssl-ciphers: "ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384"
+  ssl-prefer-server-ciphers: "false"
+  
+  # Compression
+  enable-brotli: "true"
+  brotli-level: "6"
+  brotli-types: "text/xml image/svg+xml application/x-font-ttf image/vnd.microsoft.icon application/x-font-opentype application/json font/eot application/vnd.ms-fontobject application/javascript font/otf application/xml application/xhtml+xml text/javascript application/x-javascript text/plain application/x-font-truetype application/xml+rss image/x-icon font/opentype text/css image/x-win-bitmap"
+
+---
+# Pod Disruption Budget for Services
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: auth-service-pdb
+  namespace: zoptal-production
+  labels:
+    app.kubernetes.io/name: auth-service
+    app.kubernetes.io/component: disruption-budget
+spec:
+  minAvailable: 2
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: auth-service
+
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: project-service-pdb
+  namespace: zoptal-production
+  labels:
+    app.kubernetes.io/name: project-service
+    app.kubernetes.io/component: disruption-budget
+spec:
+  minAvailable: 2
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: project-service
+
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: ai-service-pdb
+  namespace: zoptal-production
+  labels:
+    app.kubernetes.io/name: ai-service
+    app.kubernetes.io/component: disruption-budget
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: ai-service
+
+---
+# Service Monitor for Autoscaling Metrics
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: autoscaling-metrics
+  namespace: zoptal-production
+  labels:
+    app.kubernetes.io/name: autoscaling-metrics
+    app.kubernetes.io/component: monitoring
+    release: prometheus
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/component: backend
+  endpoints:
+  - port: metrics
+    interval: 15s
+    path: /metrics
+
+---
+# PrometheusRule for Autoscaling Alerts
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: autoscaling-alerts
+  namespace: zoptal-production
+  labels:
+    app.kubernetes.io/name: autoscaling-alerts
+    app.kubernetes.io/component: alerts
+    release: prometheus
+spec:
+  groups:
+  - name: autoscaling.rules
+    rules:
+    - alert: HPAMaxReplicasReached
+      expr: kube_horizontalpodautoscaler_status_current_replicas == kube_horizontalpodautoscaler_spec_max_replicas
+      for: 5m
+      labels:
+        severity: warning
+        component: "{{ $labels.horizontalpodautoscaler }}"
+      annotations:
+        summary: "HPA {{ $labels.horizontalpodautoscaler }} has reached maximum replicas"
+        description: "HPA {{ $labels.horizontalpodautoscaler }} in namespace {{ $labels.namespace }} has been at maximum replicas ({{ $value }}) for more than 5 minutes"
+
+    - alert: HPAHighCPUUtilization
+      expr: |
+        (
+          kube_horizontalpodautoscaler_status_current_replicas /
+          kube_horizontalpodautoscaler_spec_max_replicas
+        ) > 0.8
+        and
+        (
+          rate(container_cpu_usage_seconds_total{container!="POD",container!=""}[5m]) * 100
+        ) > 80
+      for: 10m
+      labels:
+        severity: warning
+        component: "{{ $labels.horizontalpodautoscaler }}"
+      annotations:
+        summary: "High CPU utilization with near-max replicas"
+        description: "Service {{ $labels.horizontalpodautoscaler }} is using {{ $value }}% CPU with {{ $labels.current_replicas }} replicas ({{ $labels.utilization }}% of max)"
+
+    - alert: LoadBalancerHighLatency
+      expr: histogram_quantile(0.95, rate(nginx_ingress_controller_request_duration_seconds_bucket[5m])) > 2
+      for: 5m
+      labels:
+        severity: warning
+      annotations:
+        summary: "Load balancer high latency detected"
+        description: "95th percentile latency is {{ $value }}s for ingress {{ $labels.ingress }}"
+
+    - alert: LoadBalancerHighErrorRate
+      expr: |
+        (
+          rate(nginx_ingress_controller_requests_total{status=~"5.."}[5m]) /
+          rate(nginx_ingress_controller_requests_total[5m])
+        ) * 100 > 5
+      for: 5m
+      labels:
+        severity: critical
+      annotations:
+        summary: "Load balancer high error rate"
+        description: "Error rate is {{ $value }}% for ingress {{ $labels.ingress }}"
+
+---
+# Network Policy for Load Balancer Traffic
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: load-balancer-traffic
+  namespace: zoptal-production
+  labels:
+    app.kubernetes.io/name: load-balancer-policy
+    app.kubernetes.io/component: network-security
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/component: backend
+  policyTypes:
+  - Ingress
+  ingress:
+  # Allow traffic from ingress controller
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          name: ingress-nginx
+    ports:
+    - protocol: TCP
+      port: 4001
+    - protocol: TCP
+      port: 4002
+    - protocol: TCP
+      port: 4003
+    - protocol: TCP
+      port: 4004
+    - protocol: TCP
+      port: 4005
+  # Allow health check traffic
+  - from: []
+    ports:
+    - protocol: TCP
+      port: 8080  # Health check port
+
+---
+# Circuit Breaker Configuration
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: circuit-breaker-config
+  namespace: zoptal-production
+  labels:
+    app.kubernetes.io/name: circuit-breaker
+    app.kubernetes.io/component: config
+data:
+  envoy.yaml: |
+    static_resources:
+      listeners:
+      - name: listener_0
+        address:
+          socket_address:
+            protocol: TCP
+            address: 0.0.0.0
+            port_value: 10000
+        filter_chains:
+        - filters:
+          - name: envoy.filters.network.http_connection_manager
+            typed_config:
+              "@type": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
+              stat_prefix: ingress_http
+              access_log:
+              - name: envoy.access_loggers.stdout
+                typed_config:
+                  "@type": type.googleapis.com/envoy.extensions.access_loggers.stream.v3.StdoutAccessLog
+              http_filters:
+              - name: envoy.filters.http.local_ratelimit
+                typed_config:
+                  "@type": type.googleapis.com/udpa.type.v1.TypedStruct
+                  type_url: type.googleapis.com/envoy.extensions.filters.http.local_ratelimit.v3.LocalRateLimit
+                  value:
+                    stat_prefix: local_rate_limiter
+                    token_bucket:
+                      max_tokens: 1000
+                      tokens_per_fill: 1000
+                      fill_interval: 60s
+              - name: envoy.filters.http.router
+                typed_config:
+                  "@type": type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
+              route_config:
+                name: local_route
+                virtual_hosts:
+                - name: local_service
+                  domains: ["*"]
+                  routes:
+                  - match:
+                      prefix: "/"
+                    route:
+                      cluster: backend_service
+                      retry_policy:
+                        retry_on: "5xx,reset,connect-failure,refused-stream"
+                        num_retries: 3
+                        per_try_timeout: 30s
+      clusters:
+      - name: backend_service
+        connect_timeout: 10s
+        type: LOGICAL_DNS
+        dns_lookup_family: V4_ONLY
+        lb_policy: ROUND_ROBIN
+        outlier_detection:
+          consecutive_5xx: 3
+          consecutive_gateway_failure: 3
+          interval: 30s
+          base_ejection_time: 30s
+          max_ejection_percent: 50
+          min_health_percent: 30
+        circuit_breakers:
+          thresholds:
+          - priority: DEFAULT
+            max_connections: 1000
+            max_pending_requests: 100
+            max_requests: 1000
+            max_retries: 3
+        load_assignment:
+          cluster_name: backend_service
+          endpoints:
+          - lb_endpoints:
+            - endpoint:
+                address:
+                  socket_address:
+                    address: auth-service
+                    port_value: 4001
+
+---
+# Cluster Autoscaler Configuration
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: cluster-autoscaler
+  namespace: kube-system
+  labels:
+    app: cluster-autoscaler
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: cluster-autoscaler
+  template:
+    metadata:
+      labels:
+        app: cluster-autoscaler
+    spec:
+      serviceAccountName: cluster-autoscaler
+      containers:
+      - image: k8s.gcr.io/autoscaling/cluster-autoscaler:v1.25.0
+        name: cluster-autoscaler
+        resources:
+          limits:
+            cpu: 100m
+            memory: 300Mi
+          requests:
+            cpu: 100m
+            memory: 300Mi
+        command:
+        - ./cluster-autoscaler
+        - --v=4
+        - --stderrthreshold=info
+        - --cloud-provider=aws
+        - --skip-nodes-with-local-storage=false
+        - --expander=least-waste
+        - --node-group-auto-discovery=asg:tag=k8s.io/cluster-autoscaler/enabled,k8s.io/cluster-autoscaler/zoptal-cluster
+        - --balance-similar-node-groups
+        - --scale-down-enabled=true
+        - --scale-down-delay-after-add=10m
+        - --scale-down-unneeded-time=10m
+        - --scale-down-utilization-threshold=0.5
+        - --skip-nodes-with-system-pods=false
+        env:
+        - name: AWS_REGION
+          value: us-east-1
+
+---
+# ServiceAccount for Cluster Autoscaler
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  labels:
+    k8s-addon: cluster-autoscaler.addons.k8s.io
+    k8s-app: cluster-autoscaler
+  name: cluster-autoscaler
+  namespace: kube-system
+  annotations:
+    eks.amazonaws.com/role-arn: arn:aws:iam::ACCOUNT_ID:role/cluster-autoscaler-role

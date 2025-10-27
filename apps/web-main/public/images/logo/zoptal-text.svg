@@ -1,0 +1,16 @@
+<svg width="1800" height="640" viewBox="0 0 1800 640" xmlns="http://www.w3.org/2000/svg">
+  <rect width="1800" height="640" fill="none"/>
+  <defs>
+    <linearGradient id="zoptalG" gradientUnits="userSpaceOnUse" x1="0" y1="0" x2="1800" y2="0">
+      <stop offset="0%" stop-color="#2563EB"/>
+      <stop offset="100%" stop-color="#4F46E5"/>
+    </linearGradient>
+  </defs>
+  <g transform="translate(48,102) scale(0.4248046875,0.4248046875)" fill="url(#zoptalG)">
+    
+<path d="M474.951 295.451H215.606L257.296 446.526L173.935 517.036L35 188H567.593L474.969 295.432L474.951 295.451ZM456.426 829.279L549.049 718.476H808.394L766.704 631.19L850.065 564.05L989 829.279H456.426ZM373.065 819.206L229.49 836L627.77 224.94L752.82 221.589L373.065 819.206Z"/>
+
+  </g>
+  <text x="487" y="446" font-family="Inter, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif"
+        font-size="313" font-weight="800" letter-spacing="-0.5" fill="url(#zoptalG)">optal</text>
+</svg>

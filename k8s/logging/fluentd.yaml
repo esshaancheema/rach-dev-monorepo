@@ -1,0 +1,344 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: fluentd
+  namespace: logging
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: fluentd
+rules:
+- apiGroups: [""]
+  resources:
+  - namespaces
+  - pods
+  - pods/logs
+  - nodes
+  - nodes/proxy
+  verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: fluentd
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: fluentd
+subjects:
+- kind: ServiceAccount
+  name: fluentd
+  namespace: logging
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: fluentd-config
+  namespace: logging
+data:
+  fluent.conf: |
+    # Input plugins for log collection
+    <source>
+      @type tail
+      @id in_tail_container_logs
+      path /var/log/containers/*.log
+      pos_file /var/log/fluentd-containers.log.pos
+      tag kubernetes.*
+      read_from_head true
+      <parse>
+        @type multi_format
+        <pattern>
+          format json
+          time_key timestamp
+          time_format %Y-%m-%dT%H:%M:%S.%NZ
+        </pattern>
+        <pattern>
+          format /^(?<timestamp>[^ ]*) (?<stream>stdout|stderr)( (?<logtag>.))? (?<log>.*)$/
+          time_format %Y-%m-%dT%H:%M:%S.%N%:z
+        </pattern>
+      </parse>
+    </source>
+
+    # Kubernetes metadata filter
+    <filter kubernetes.**>
+      @type kubernetes_metadata
+      @id filter_kube_metadata
+      kubernetes_url "#{ENV['KUBERNETES_SERVICE_HOST']}:#{ENV['KUBERNETES_SERVICE_PORT_HTTPS']}"
+      verify_ssl "#{ENV['KUBERNETES_VERIFY_SSL'] || true}"
+      ca_file "#{ENV['KUBERNETES_CA_FILE']}"
+      skip_labels false
+      skip_container_metadata false
+      skip_master_url false
+      skip_namespace_metadata false
+    </filter>
+
+    # Parse application logs
+    <filter kubernetes.var.log.containers.**zoptal**.log>
+      @type parser
+      key_name log
+      reserve_data true
+      remove_key_name_field true
+      <parse>
+        @type multi_format
+        <pattern>
+          format json
+          time_key timestamp
+          time_format %Y-%m-%dT%H:%M:%S.%LZ
+        </pattern>
+        <pattern>
+          format none
+        </pattern>
+      </parse>
+    </filter>
+
+    # Add environment labels
+    <filter kubernetes.**>
+      @type record_transformer
+      <record>
+        cluster_name "#{ENV['CLUSTER_NAME'] || 'zoptal-k8s'}"
+        environment "#{ENV['ENVIRONMENT'] || 'production'}"
+      </record>
+    </filter>
+
+    # Filter out non-zoptal logs in production
+    <filter kubernetes.**>
+      @type grep
+      <regexp>
+        key $.kubernetes.namespace_name
+        pattern ^(zoptal|monitoring|logging|kube-system|default)$
+      </regexp>
+    </filter>
+
+    # Route logs based on namespace and application
+    <match kubernetes.var.log.containers.**zoptal**.log>
+      @type copy
+      
+      # Send to CloudWatch Logs
+      <store>
+        @type cloudwatch_logs
+        @id out_cloudwatch_zoptal
+        region "#{ENV['AWS_REGION'] || 'us-east-1'}"
+        log_group_name "/kubernetes/zoptal"
+        log_stream_name_key $.kubernetes.container_name
+        auto_create_stream true
+        use_tag_as_group false
+        <buffer>
+          @type file
+          path /var/log/fluentd-buffers/cloudwatch-zoptal
+          flush_mode interval
+          retry_type exponential_backoff
+          flush_thread_count 2
+          flush_interval 5s
+          retry_forever
+          retry_max_interval 30
+          chunk_limit_size 2m
+          queue_limit_length 8
+          overflow_action block
+        </buffer>
+      </store>
+
+      # Send to Elasticsearch (optional)
+      <store>
+        @type elasticsearch
+        @id out_es_zoptal
+        host "#{ENV['ELASTICSEARCH_HOST'] || 'elasticsearch.logging.svc.cluster.local'}"
+        port "#{ENV['ELASTICSEARCH_PORT'] || '9200'}"
+        scheme "#{ENV['ELASTICSEARCH_SCHEME'] || 'http'}"
+        index_name "zoptal-logs-%Y.%m.%d"
+        type_name "_doc"
+        include_timestamp true
+        reconnect_on_error true
+        reload_on_failure true
+        reload_connections false
+        <buffer>
+          @type file
+          path /var/log/fluentd-buffers/elasticsearch-zoptal
+          flush_mode interval
+          retry_type exponential_backoff
+          flush_thread_count 2
+          flush_interval 5s
+          retry_forever
+          retry_max_interval 30
+          chunk_limit_size 2m
+          queue_limit_length 8
+          overflow_action block
+        </buffer>
+      </store>
+    </match>
+
+    # System logs
+    <match kubernetes.var.log.containers.**kube-system**.log>
+      @type cloudwatch_logs
+      @id out_cloudwatch_system
+      region "#{ENV['AWS_REGION'] || 'us-east-1'}"
+      log_group_name "/kubernetes/system"
+      log_stream_name_key $.kubernetes.container_name
+      auto_create_stream true
+      <buffer>
+        @type file
+        path /var/log/fluentd-buffers/cloudwatch-system
+        flush_mode interval
+        retry_type exponential_backoff
+        flush_thread_count 2
+        flush_interval 10s
+        retry_forever
+        retry_max_interval 30
+        chunk_limit_size 2m
+        queue_limit_length 8
+        overflow_action block
+      </buffer>
+    </match>
+
+    # Monitoring logs
+    <match kubernetes.var.log.containers.**monitoring**.log>
+      @type cloudwatch_logs
+      @id out_cloudwatch_monitoring
+      region "#{ENV['AWS_REGION'] || 'us-east-1'}"
+      log_group_name "/kubernetes/monitoring"
+      log_stream_name_key $.kubernetes.container_name
+      auto_create_stream true
+      <buffer>
+        @type file
+        path /var/log/fluentd-buffers/cloudwatch-monitoring
+        flush_mode interval
+        retry_type exponential_backoff
+        flush_thread_count 2
+        flush_interval 10s
+        retry_forever
+        retry_max_interval 30
+        chunk_limit_size 2m
+        queue_limit_length 8
+        overflow_action block
+      </buffer>
+    </match>
+
+    # Default catch-all
+    <match **>
+      @type stdout
+      @id out_stdout
+    </match>
+
+  prometheus.conf: |
+    # Prometheus monitoring for Fluentd
+    <source>
+      @type prometheus
+      bind 0.0.0.0
+      port 24231
+      metrics_path /metrics
+    </source>
+
+    <source>
+      @type prometheus_output_monitor
+      interval 10
+      <labels>
+        hostname ${hostname}
+      </labels>
+    </source>
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: fluentd
+  namespace: logging
+  labels:
+    app.kubernetes.io/name: fluentd
+    app.kubernetes.io/component: fluentd
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: fluentd
+      app.kubernetes.io/component: fluentd
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: fluentd
+        app.kubernetes.io/component: fluentd
+    spec:
+      serviceAccountName: fluentd
+      tolerations:
+      - key: node-role.kubernetes.io/master
+        effect: NoSchedule
+      - operator: Exists
+        effect: NoExecute
+      - operator: Exists
+        effect: NoSchedule
+      containers:
+      - name: fluentd
+        image: fluent/fluentd-kubernetes-daemonset:v1.16-debian-cloudwatch-1
+        env:
+        - name: AWS_REGION
+          value: "us-east-1"
+        - name: CLUSTER_NAME
+          value: "zoptal-k8s"
+        - name: ENVIRONMENT
+          value: "production"
+        - name: KUBERNETES_CA_FILE
+          value: /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+        - name: FLUENT_CONF
+          value: "fluent.conf"
+        - name: FLUENTD_SYSTEMD_CONF
+          value: disable
+        resources:
+          limits:
+            memory: 512Mi
+            cpu: 500m
+          requests:
+            cpu: 100m
+            memory: 200Mi
+        volumeMounts:
+        - name: varlog
+          mountPath: /var/log
+        - name: dockercontainerlogdirectory
+          mountPath: /var/lib/docker/containers
+          readOnly: true
+        - name: fluentd-config
+          mountPath: /fluentd/etc/fluent.conf
+          subPath: fluent.conf
+        - name: fluentd-config
+          mountPath: /fluentd/etc/prometheus.conf
+          subPath: prometheus.conf
+        ports:
+        - containerPort: 24231
+          name: prometheus
+          protocol: TCP
+        livenessProbe:
+          httpGet:
+            path: /metrics
+            port: 24231
+          initialDelaySeconds: 30
+          periodSeconds: 30
+        readinessProbe:
+          httpGet:
+            path: /metrics
+            port: 24231
+          initialDelaySeconds: 5
+          periodSeconds: 10
+      terminationGracePeriodSeconds: 30
+      volumes:
+      - name: varlog
+        hostPath:
+          path: /var/log
+      - name: dockercontainerlogdirectory
+        hostPath:
+          path: /var/lib/docker/containers
+      - name: fluentd-config
+        configMap:
+          name: fluentd-config
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: fluentd
+  namespace: logging
+  labels:
+    app.kubernetes.io/name: fluentd
+    app.kubernetes.io/component: fluentd
+spec:
+  ports:
+  - name: prometheus
+    port: 24231
+    targetPort: 24231
+  selector:
+    app.kubernetes.io/name: fluentd
+    app.kubernetes.io/component: fluentd

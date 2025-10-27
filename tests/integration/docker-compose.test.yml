@@ -1,0 +1,210 @@
+version: '3.8'
+
+services:
+  postgres-test:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_DB: zoptal_test
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: password
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_test_data:/var/lib/postgresql/data
+      - ./sql/init-test-db.sql:/docker-entrypoint-initdb.d/init.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  redis-test:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    command: redis-server --appendonly yes
+    volumes:
+      - redis_test_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  # Mock external services for testing
+  stripe-mock:
+    image: stripemock/stripe-mock:latest
+    ports:
+      - "12111:12111"
+      - "12112:12112"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:12111/"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  mailhog:
+    image: mailhog/mailhog:latest
+    ports:
+      - "1025:1025"  # SMTP
+      - "8025:8025"  # Web UI
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:8025/"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  # Test service containers (if needed)
+  auth-service-test:
+    build:
+      context: ../../services/auth-service
+      dockerfile: Dockerfile
+    environment:
+      NODE_ENV: test
+      PORT: 3001
+      DATABASE_URL: postgresql://postgres:password@postgres-test:5432/zoptal_test
+      REDIS_URL: redis://redis-test:6379
+      JWT_SECRET: test-secret-key
+    ports:
+      - "3001:3001"
+    depends_on:
+      postgres-test:
+        condition: service_healthy
+      redis-test:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3001/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    profiles:
+      - services
+
+  project-service-test:
+    build:
+      context: ../../services/project-service
+      dockerfile: Dockerfile
+    environment:
+      NODE_ENV: test
+      PORT: 3002
+      DATABASE_URL: postgresql://postgres:password@postgres-test:5432/zoptal_test
+      REDIS_URL: redis://redis-test:6379
+      AUTH_SERVICE_URL: http://auth-service-test:3001
+    ports:
+      - "3002:3002"
+    depends_on:
+      postgres-test:
+        condition: service_healthy
+      redis-test:
+        condition: service_healthy
+      auth-service-test:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3002/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    profiles:
+      - services
+
+  ai-service-test:
+    build:
+      context: ../../services/ai-service
+      dockerfile: Dockerfile
+    environment:
+      NODE_ENV: test
+      PORT: 3003
+      DATABASE_URL: postgresql://postgres:password@postgres-test:5432/zoptal_test
+      REDIS_URL: redis://redis-test:6379
+      AUTH_SERVICE_URL: http://auth-service-test:3001
+      OPENAI_API_KEY: sk-test-key
+      ANTHROPIC_API_KEY: test-key
+    ports:
+      - "3003:3003"
+    depends_on:
+      postgres-test:
+        condition: service_healthy
+      redis-test:
+        condition: service_healthy
+      auth-service-test:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3003/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    profiles:
+      - services
+
+  billing-service-test:
+    build:
+      context: ../../services/billing-service
+      dockerfile: Dockerfile
+    environment:
+      NODE_ENV: test
+      PORT: 3004
+      DATABASE_URL: postgresql://postgres:password@postgres-test:5432/zoptal_test
+      REDIS_URL: redis://redis-test:6379
+      AUTH_SERVICE_URL: http://auth-service-test:3001
+      STRIPE_SECRET_KEY: sk_test_mock
+      STRIPE_WEBHOOK_SECRET: whsec_mock
+    ports:
+      - "3004:3004"
+    depends_on:
+      postgres-test:
+        condition: service_healthy
+      redis-test:
+        condition: service_healthy
+      auth-service-test:
+        condition: service_healthy
+      stripe-mock:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3004/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    profiles:
+      - services
+
+  notification-service-test:
+    build:
+      context: ../../services/notification-service
+      dockerfile: Dockerfile
+    environment:
+      NODE_ENV: test
+      PORT: 3005
+      DATABASE_URL: postgresql://postgres:password@postgres-test:5432/zoptal_test
+      REDIS_URL: redis://redis-test:6379
+      AUTH_SERVICE_URL: http://auth-service-test:3001
+      SENDGRID_API_KEY: SG.test.key
+      TWILIO_ACCOUNT_SID: AC_test
+      TWILIO_AUTH_TOKEN: test_token
+      SMTP_HOST: mailhog
+      SMTP_PORT: 1025
+    ports:
+      - "3005:3005"
+    depends_on:
+      postgres-test:
+        condition: service_healthy
+      redis-test:
+        condition: service_healthy
+      auth-service-test:
+        condition: service_healthy
+      mailhog:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3005/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    profiles:
+      - services
+
+volumes:
+  postgres_test_data:
+  redis_test_data:
+
+networks:
+  default:
+    driver: bridge

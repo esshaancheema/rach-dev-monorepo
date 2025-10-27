@@ -1,0 +1,56 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: zoptal-config
+  namespace: zoptal
+data:
+  # Database Configuration
+  DATABASE_HOST: "zoptal-postgres"
+  DATABASE_PORT: "5432"
+  DATABASE_NAME: "zoptal"
+  
+  # Redis Configuration
+  REDIS_HOST: "zoptal-redis"
+  REDIS_PORT: "6379"
+  
+  # ClickHouse Configuration
+  CLICKHOUSE_HOST: "zoptal-clickhouse"
+  CLICKHOUSE_PORT: "8123"
+  CLICKHOUSE_DATABASE: "analytics"
+  CLICKHOUSE_USER: "analytics"
+  
+  # Service URLs (Internal)
+  AUTH_SERVICE_URL: "http://zoptal-auth-service:4001"
+  PROJECT_SERVICE_URL: "http://zoptal-project-service:4002"
+  AI_SERVICE_URL: "http://zoptal-ai-service:4003"
+  BILLING_SERVICE_URL: "http://zoptal-billing-service:4004"
+  NOTIFICATION_SERVICE_URL: "http://zoptal-notification-service:4005"
+  ANALYTICS_SERVICE_URL: "http://zoptal-analytics-service:4006"
+  
+  # Application Configuration
+  NODE_ENV: "production"
+  BCRYPT_ROUNDS: "12"
+  EMAIL_FROM: "noreply@zoptal.com"
+  
+  # AWS Configuration
+  AWS_REGION: "us-east-1"
+  
+  # External Service Configuration
+  SMTP_PORT: "587"
+  
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: zoptal-frontend-config
+  namespace: zoptal
+data:
+  # Public API URLs
+  NEXT_PUBLIC_AUTH_SERVICE_URL: "https://api.zoptal.com"
+  NEXT_PUBLIC_PROJECT_SERVICE_URL: "https://api.zoptal.com"
+  NEXT_PUBLIC_AI_SERVICE_URL: "https://api.zoptal.com"
+  NEXT_PUBLIC_BILLING_SERVICE_URL: "https://api.zoptal.com"
+  NEXT_PUBLIC_NOTIFICATION_SERVICE_URL: "https://api.zoptal.com"
+  NEXT_PUBLIC_ANALYTICS_SERVICE_URL: "https://api.zoptal.com"
+  NEXT_PUBLIC_SITE_URL: "https://zoptal.com"
+  NEXT_TELEMETRY_DISABLED: "1"

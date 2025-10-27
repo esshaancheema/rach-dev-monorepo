@@ -1,0 +1,461 @@
+# Event Store Kubernetes Deployment
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: event-store
+  namespace: zoptal-production
+  labels:
+    app: event-store
+    version: v1.0.0
+    component: event-sourcing
+spec:
+  replicas: 2
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  selector:
+    matchLabels:
+      app: event-store
+  template:
+    metadata:
+      labels:
+        app: event-store
+        version: v1.0.0
+        component: event-sourcing
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "3100"
+        prometheus.io/path: "/metrics"
+    spec:
+      serviceAccountName: event-store
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 1000
+      containers:
+      - name: event-store
+        image: zoptal/event-store:v1.0.0
+        imagePullPolicy: IfNotPresent
+        ports:
+        - containerPort: 3100
+          name: http
+          protocol: TCP
+        - containerPort: 3101
+          name: metrics
+          protocol: TCP
+        env:
+        - name: NODE_ENV
+          value: "production"
+        - name: PORT
+          value: "3100"
+        - name: METRICS_PORT
+          value: "3101"
+        
+        # MongoDB Configuration
+        - name: MONGODB_URL
+          valueFrom:
+            secretKeyRef:
+              name: event-store-secrets
+              key: mongodb-url
+        - name: MONGODB_DATABASE
+          value: "zoptal_eventstore"
+        
+        # Redis Configuration
+        - name: REDIS_URL
+          valueFrom:
+            secretKeyRef:
+              name: event-store-secrets
+              key: redis-url
+        
+        # CORS Configuration
+        - name: CORS_ORIGINS
+          value: "https://zoptal.com,https://*.zoptal.com,https://app.zoptal.com"
+        
+        # Event Store Configuration
+        - name: EVENT_BATCH_SIZE
+          value: "1000"
+        - name: SNAPSHOT_FREQUENCY
+          value: "10"
+        
+        # Projection Configuration
+        - name: PROJECTION_CATCHUP_INTERVAL
+          value: "10000"
+        - name: PROJECTION_BATCH_SIZE
+          value: "100"
+        
+        # Command Bus Configuration
+        - name: COMMAND_QUEUE_CONCURRENCY
+          value: "10"
+        - name: COMMAND_RETRY_ATTEMPTS
+          value: "3"
+        - name: COMMAND_RETRY_DELAY
+          value: "2000"
+        
+        # Logging Configuration
+        - name: LOG_LEVEL
+          value: "info"
+        
+        # Security Configuration
+        - name: ENABLE_ADMIN_ENDPOINTS
+          value: "true"
+        
+        resources:
+          requests:
+            memory: "512Mi"
+            cpu: "200m"
+          limits:
+            memory: "2Gi"
+            cpu: "1000m"
+        
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 3100
+          initialDelaySeconds: 30
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+          
+        readinessProbe:
+          httpGet:
+            path: /ready
+            port: 3100
+          initialDelaySeconds: 5
+          periodSeconds: 5
+          timeoutSeconds: 3
+          failureThreshold: 3
+          
+        startupProbe:
+          httpGet:
+            path: /health
+            port: 3100
+          initialDelaySeconds: 10
+          periodSeconds: 5
+          timeoutSeconds: 5
+          failureThreshold: 30
+        
+        volumeMounts:
+        - name: logs
+          mountPath: /app/logs
+        - name: tmp
+          mountPath: /tmp
+      
+      volumes:
+      - name: logs
+        emptyDir: {}
+      - name: tmp
+        emptyDir: {}
+      
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 100
+            podAffinityTerm:
+              labelSelector:
+                matchExpressions:
+                - key: app
+                  operator: In
+                  values:
+                  - event-store
+              topologyKey: kubernetes.io/hostname
+      
+      tolerations:
+      - key: "node.kubernetes.io/not-ready"
+        operator: "Exists"
+        effect: "NoExecute"
+        tolerationSeconds: 300
+      - key: "node.kubernetes.io/unreachable"
+        operator: "Exists"
+        effect: "NoExecute"
+        tolerationSeconds: 300
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: event-store
+  namespace: zoptal-production
+  labels:
+    app: event-store
+spec:
+  type: ClusterIP
+  ports:
+  - name: http
+    port: 3100
+    targetPort: 3100
+    protocol: TCP
+  - name: metrics
+    port: 3101
+    targetPort: 3101
+    protocol: TCP
+  selector:
+    app: event-store
+
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: event-store
+  namespace: zoptal-production
+  labels:
+    app: event-store
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: event-store
+  namespace: zoptal-production
+rules:
+- apiGroups: [""]
+  resources: ["secrets", "configmaps"]
+  verbs: ["get", "list", "watch"]
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: event-store
+  namespace: zoptal-production
+subjects:
+- kind: ServiceAccount
+  name: event-store
+  namespace: zoptal-production
+roleRef:
+  kind: Role
+  name: event-store
+  apiGroup: rbac.authorization.k8s.io
+
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: event-store-secrets
+  namespace: zoptal-production
+  labels:
+    app: event-store
+type: Opaque
+data:
+  mongodb-url: bW9uZ29kYjovL3pvcHRhbC1tb25nb2RiLnpvcHRhbC1wcm9kdWN0aW9uLnN2Yy5jbHVzdGVyLmxvY2FsOjI3MDE3L3pvcHRhbF9ldmVudHN0b3Jl # mongodb://zoptal-mongodb.zoptal-production.svc.cluster.local:27017/zoptal_eventstore
+  redis-url: cmVkaXM6Ly96b3B0YWwtcmVkaXMuem9wdGFsLXByb2R1Y3Rpb24uc3ZjLmNsdXN0ZXIubG9jYWw6NjM3OS8w # redis://zoptal-redis.zoptal-production.svc.cluster.local:6379/0
+
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: event-store
+  namespace: zoptal-production
+  labels:
+    app: event-store
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: event-store
+  minReplicas: 2
+  maxReplicas: 10
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 70
+  - type: Resource
+    resource:
+      name: memory
+      target:
+        type: Utilization
+        averageUtilization: 80
+  behavior:
+    scaleDown:
+      stabilizationWindowSeconds: 300
+      policies:
+      - type: Percent
+        value: 10
+        periodSeconds: 60
+    scaleUp:
+      stabilizationWindowSeconds: 60
+      policies:
+      - type: Percent
+        value: 50
+        periodSeconds: 60
+      - type: Pods
+        value: 2
+        periodSeconds: 60
+
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: event-store
+  namespace: zoptal-production
+  labels:
+    app: event-store
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: event-store
+
+---
+apiVersion: networking.istio.io/v1beta1
+kind: VirtualService
+metadata:
+  name: event-store
+  namespace: zoptal-production
+spec:
+  hosts:
+  - events.zoptal.com
+  gateways:
+  - zoptal-gateway
+  http:
+  - match:
+    - uri:
+        prefix: /
+    route:
+    - destination:
+        host: event-store
+        port:
+          number: 3100
+    timeout: 300s
+    retries:
+      attempts: 3
+      perTryTimeout: 100s
+      retryOn: 5xx,gateway-error,connect-failure,refused-stream
+
+---
+apiVersion: networking.istio.io/v1beta1
+kind: DestinationRule
+metadata:
+  name: event-store
+  namespace: zoptal-production
+spec:
+  host: event-store
+  trafficPolicy:
+    connectionPool:
+      tcp:
+        maxConnections: 50
+      http:
+        http1MaxPendingRequests: 10
+        maxRequestsPerConnection: 10
+        maxRetries: 3
+        consecutiveGatewayErrors: 5
+        interval: 30s
+        baseEjectionTime: 30s
+        maxEjectionPercent: 50
+    circuitBreaker:
+      consecutiveGatewayErrors: 5
+      consecutive5xxErrors: 5
+      interval: 30s
+      baseEjectionTime: 30s
+      maxEjectionPercent: 50
+    outlierDetection:
+      consecutiveGatewayErrors: 5
+      consecutive5xxErrors: 5
+      interval: 30s
+      baseEjectionTime: 30s
+      maxEjectionPercent: 50
+      minHealthPercent: 50
+
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: event-store
+  namespace: zoptal-production
+  labels:
+    app: event-store
+spec:
+  selector:
+    matchLabels:
+      app: event-store
+  endpoints:
+  - port: metrics
+    interval: 15s
+    path: /metrics
+    honorLabels: true
+
+---
+# MongoDB StatefulSet for Event Store
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: event-store-mongodb
+  namespace: zoptal-production
+  labels:
+    app: event-store-mongodb
+spec:
+  serviceName: event-store-mongodb
+  replicas: 3
+  selector:
+    matchLabels:
+      app: event-store-mongodb
+  template:
+    metadata:
+      labels:
+        app: event-store-mongodb
+    spec:
+      containers:
+      - name: mongodb
+        image: mongo:7.0
+        ports:
+        - containerPort: 27017
+        env:
+        - name: MONGO_INITDB_ROOT_USERNAME
+          value: "eventstore"
+        - name: MONGO_INITDB_ROOT_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: mongodb-secret
+              key: password
+        - name: MONGO_INITDB_DATABASE
+          value: "zoptal_eventstore"
+        volumeMounts:
+        - name: mongodb-storage
+          mountPath: /data/db
+        resources:
+          requests:
+            memory: "1Gi"
+            cpu: "500m"
+          limits:
+            memory: "4Gi"
+            cpu: "2"
+  volumeClaimTemplates:
+  - metadata:
+      name: mongodb-storage
+    spec:
+      accessModes: ["ReadWriteOnce"]
+      storageClassName: "fast-ssd"
+      resources:
+        requests:
+          storage: 100Gi
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: event-store-mongodb
+  namespace: zoptal-production
+  labels:
+    app: event-store-mongodb
+spec:
+  ports:
+  - port: 27017
+    targetPort: 27017
+  selector:
+    app: event-store-mongodb
+  clusterIP: None
+
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: mongodb-secret
+  namespace: zoptal-production
+type: Opaque
+data:
+  password: ZXZlbnRzdG9yZV9wYXNzd29yZF8xMjM= # eventstore_password_123

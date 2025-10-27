@@ -1,0 +1,79 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: zoptal-service-account
+  namespace: zoptal
+  annotations:
+    eks.amazonaws.com/role-arn: arn:aws:iam::ACCOUNT_ID:role/ZoptalServiceRole
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  namespace: zoptal
+  name: zoptal-role
+rules:
+- apiGroups: [""]
+  resources: ["pods", "services", "endpoints", "configmaps", "secrets"]
+  verbs: ["get", "list", "watch"]
+- apiGroups: ["apps"]
+  resources: ["deployments", "replicasets"]
+  verbs: ["get", "list", "watch"]
+- apiGroups: ["metrics.k8s.io"]
+  resources: ["pods", "nodes"]
+  verbs: ["get", "list"]
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: zoptal-role-binding
+  namespace: zoptal
+subjects:
+- kind: ServiceAccount
+  name: zoptal-service-account
+  namespace: zoptal
+roleRef:
+  kind: Role
+  name: zoptal-role
+  apiGroup: rbac.authorization.k8s.io
+
+---
+# Service Account for External Secrets Operator
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: external-secrets-sa
+  namespace: zoptal
+  annotations:
+    eks.amazonaws.com/role-arn: arn:aws:iam::ACCOUNT_ID:role/ExternalSecretsRole
+
+---
+# ClusterRole for monitoring
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: zoptal-monitoring
+rules:
+- apiGroups: [""]
+  resources: ["nodes", "services", "endpoints", "pods"]
+  verbs: ["get", "list", "watch"]
+- apiGroups: [""]
+  resources: ["configmaps"]
+  verbs: ["get"]
+- nonResourceURLs: ["/metrics"]
+  verbs: ["get"]
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: zoptal-monitoring
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: zoptal-monitoring
+subjects:
+- kind: ServiceAccount
+  name: zoptal-service-account
+  namespace: zoptal

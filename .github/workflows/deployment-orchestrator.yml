@@ -1,0 +1,432 @@
+name: Deployment Orchestrator
+
+on:
+  push:
+    branches: [main, develop]
+    paths:
+      - 'services/**'
+      - 'apps/**'
+      - 'packages/**'
+  pull_request:
+    branches: [main, develop]
+    types: [closed]
+
+env:
+  AWS_REGION: us-east-1
+  ECR_REGISTRY: ${{ secrets.ECR_REGISTRY }}
+
+jobs:
+  detect-changes:
+    runs-on: ubuntu-latest
+    outputs:
+      services: ${{ steps.changes.outputs.services }}
+      apps: ${{ steps.changes.outputs.apps }}
+      packages: ${{ steps.changes.outputs.packages }}
+      deploy-staging: ${{ steps.changes.outputs.deploy-staging }}
+      deploy-production: ${{ steps.changes.outputs.deploy-production }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Detect changes
+        id: changes
+        run: |
+          # Get changed files
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            CHANGED_FILES=$(git diff --name-only ${{ github.event.pull_request.base.sha }} ${{ github.event.pull_request.head.sha }})
+          else
+            CHANGED_FILES=$(git diff --name-only ${{ github.event.before }} ${{ github.sha }})
+          fi
+          
+          echo "Changed files:"
+          echo "$CHANGED_FILES"
+          
+          # Detect changed services
+          CHANGED_SERVICES=$(echo "$CHANGED_FILES" | grep '^services/' | cut -d'/' -f2 | sort -u | jq -R -s -c 'split("\n")[:-1]')
+          echo "services=$CHANGED_SERVICES" >> $GITHUB_OUTPUT
+          
+          # Detect changed apps
+          CHANGED_APPS=$(echo "$CHANGED_FILES" | grep '^apps/' | cut -d'/' -f2 | sort -u | jq -R -s -c 'split("\n")[:-1]')
+          echo "apps=$CHANGED_APPS" >> $GITHUB_OUTPUT
+          
+          # Detect changed packages
+          CHANGED_PACKAGES=$(echo "$CHANGED_FILES" | grep '^packages/' | cut -d'/' -f2 | sort -u | jq -R -s -c 'split("\n")[:-1]')
+          echo "packages=$CHANGED_PACKAGES" >> $GITHUB_OUTPUT
+          
+          # Determine deployment targets
+          if [ "${{ github.ref }}" = "refs/heads/develop" ] || [ "${{ github.event.pull_request.base.ref }}" = "develop" ]; then
+            echo "deploy-staging=true" >> $GITHUB_OUTPUT
+          else
+            echo "deploy-staging=false" >> $GITHUB_OUTPUT
+          fi
+          
+          if [ "${{ github.ref }}" = "refs/heads/main" ] || [ "${{ github.event.pull_request.base.ref }}" = "main" ]; then
+            echo "deploy-production=true" >> $GITHUB_OUTPUT
+          else
+            echo "deploy-production=false" >> $GITHUB_OUTPUT
+          fi
+
+  quality-gates:
+    runs-on: ubuntu-latest
+    needs: detect-changes
+    if: ${{ needs.detect-changes.outputs.services != '[]' || needs.detect-changes.outputs.apps != '[]' }}
+    strategy:
+      matrix:
+        component: ${{ fromJson(needs.detect-changes.outputs.services) }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run linting
+        run: npm run lint:${{ matrix.component }}
+
+      - name: Run unit tests
+        run: npm run test:unit -- --testPathPattern=${{ matrix.component }}
+
+      - name: Run integration tests
+        run: npm run test:integration -- --testPathPattern=${{ matrix.component }}
+
+      - name: Security scan
+        uses: securecodewarrior/github-action-add-sarif@v1
+        with:
+          sarif-file: 'security-scan-results.sarif'
+
+      - name: Build quality gate
+        run: |
+          # Check test coverage
+          COVERAGE=$(npm run test:coverage -- --testPathPattern=${{ matrix.component }} | grep 'Lines' | awk '{print $4}' | sed 's/%//')
+          if [ "$COVERAGE" -lt "80" ]; then
+            echo "❌ Test coverage below 80%: $COVERAGE%"
+            exit 1
+          fi
+          echo "✅ Test coverage: $COVERAGE%"
+
+  build-and-scan:
+    runs-on: ubuntu-latest
+    needs: [detect-changes, quality-gates]
+    if: ${{ needs.detect-changes.outputs.services != '[]' || needs.detect-changes.outputs.apps != '[]' }}
+    strategy:
+      matrix:
+        component: ${{ fromJson(needs.detect-changes.outputs.services) }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./services/${{ matrix.component }}/Dockerfile
+          push: true
+          tags: |
+            ${{ env.ECR_REGISTRY }}/${{ matrix.component }}:${{ github.sha }}
+            ${{ env.ECR_REGISTRY }}/${{ matrix.component }}:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Vulnerability scan
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: ${{ env.ECR_REGISTRY }}/${{ matrix.component }}:${{ github.sha }}
+          format: 'json'
+          output: 'vulnerability-results.json'
+
+      - name: Process vulnerability results
+        run: |
+          # Check for critical vulnerabilities
+          CRITICAL_COUNT=$(jq '.Results[]?.Vulnerabilities[]? | select(.Severity == "CRITICAL") | length' vulnerability-results.json | wc -l)
+          HIGH_COUNT=$(jq '.Results[]?.Vulnerabilities[]? | select(.Severity == "HIGH") | length' vulnerability-results.json | wc -l)
+          
+          echo "Critical vulnerabilities: $CRITICAL_COUNT"
+          echo "High vulnerabilities: $HIGH_COUNT"
+          
+          # Fail if critical vulnerabilities found
+          if [ "$CRITICAL_COUNT" -gt "0" ]; then
+            echo "❌ Critical vulnerabilities found, blocking deployment"
+            exit 1
+          fi
+          
+          # Warn about high vulnerabilities
+          if [ "$HIGH_COUNT" -gt "5" ]; then
+            echo "⚠️ High number of high-severity vulnerabilities: $HIGH_COUNT"
+          fi
+
+  deploy-staging:
+    runs-on: ubuntu-latest
+    needs: [detect-changes, build-and-scan]
+    if: ${{ needs.detect-changes.outputs.deploy-staging == 'true' }}
+    environment: staging
+    strategy:
+      matrix:
+        component: ${{ fromJson(needs.detect-changes.outputs.services) }}
+      max-parallel: 3
+    steps:
+      - name: Deploy to staging
+        uses: ./.github/workflows/deploy-blue-green.yml
+        with:
+          service: ${{ matrix.component }}
+          environment: staging
+
+      - name: Post-deployment tests
+        run: |
+          # Wait for deployment to stabilize
+          sleep 60
+          
+          # Run smoke tests
+          npm run test:smoke -- --service=${{ matrix.component }} --environment=staging
+          
+          # Run E2E tests
+          npm run test:e2e -- --service=${{ matrix.component }} --environment=staging
+
+  performance-tests:
+    runs-on: ubuntu-latest
+    needs: [detect-changes, deploy-staging]
+    if: ${{ needs.detect-changes.outputs.deploy-staging == 'true' }}
+    strategy:
+      matrix:
+        component: ${{ fromJson(needs.detect-changes.outputs.services) }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+
+      - name: Install Artillery
+        run: npm install -g artillery@latest
+
+      - name: Run performance tests
+        run: |
+          # Run load tests against staging
+          artillery run tests/performance/${{ matrix.component }}-load-test.yml \
+            --target https://staging-api.zoptal.com \
+            --output performance-results.json
+
+      - name: Analyze performance results
+        run: |
+          # Check performance thresholds
+          MEAN_RESPONSE_TIME=$(jq '.aggregate.latency.mean' performance-results.json)
+          P95_RESPONSE_TIME=$(jq '.aggregate.latency.p95' performance-results.json)
+          ERROR_RATE=$(jq '.aggregate.counters["errors.total"] // 0' performance-results.json)
+          
+          echo "Mean response time: ${MEAN_RESPONSE_TIME}ms"
+          echo "P95 response time: ${P95_RESPONSE_TIME}ms"
+          echo "Error rate: $ERROR_RATE"
+          
+          # Performance gates
+          if (( $(echo "$MEAN_RESPONSE_TIME > 1000" | bc -l) )); then
+            echo "❌ Mean response time exceeds 1000ms"
+            exit 1
+          fi
+          
+          if (( $(echo "$P95_RESPONSE_TIME > 2000" | bc -l) )); then
+            echo "❌ P95 response time exceeds 2000ms"
+            exit 1
+          fi
+          
+          if [ "$ERROR_RATE" -gt "0" ]; then
+            echo "❌ Error rate above 0"
+            exit 1
+          fi
+
+  security-tests:
+    runs-on: ubuntu-latest
+    needs: [detect-changes, deploy-staging]
+    if: ${{ needs.detect-changes.outputs.deploy-staging == 'true' }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Run OWASP ZAP scan
+        uses: zaproxy/action-full-scan@v0.7.0
+        with:
+          target: 'https://staging-api.zoptal.com'
+          rules_file_name: '.zap/rules.tsv'
+          cmd_options: '-a'
+
+      - name: Run API security tests
+        run: |
+          # Run API security tests
+          npm run test:security -- --environment=staging
+
+  promote-to-production:
+    runs-on: ubuntu-latest
+    needs: [detect-changes, deploy-staging, performance-tests, security-tests]
+    if: ${{ needs.detect-changes.outputs.deploy-production == 'true' && success() }}
+    environment: production-approval
+    steps:
+      - name: Manual approval required
+        uses: trstringer/manual-approval@v1
+        with:
+          secret: ${{ github.TOKEN }}
+          approvers: ${{ secrets.PRODUCTION_APPROVERS }}
+          minimum-approvals: 2
+          issue-title: "Production Deployment Approval"
+          issue-body: |
+            Please review and approve the production deployment:
+            
+            **Services to deploy:**
+            ${{ needs.detect-changes.outputs.services }}
+            
+            **Commit:** ${{ github.sha }}
+            **Author:** ${{ github.actor }}
+            
+            **Pre-deployment checklist:**
+            - [ ] All tests passed in staging
+            - [ ] Performance tests passed
+            - [ ] Security scans passed
+            - [ ] Database migrations reviewed
+            - [ ] Rollback plan confirmed
+            
+            Please approve or reject this deployment.
+
+  deploy-production:
+    runs-on: ubuntu-latest
+    needs: [detect-changes, promote-to-production]
+    environment: production
+    strategy:
+      matrix:
+        component: ${{ fromJson(needs.detect-changes.outputs.services) }}
+      max-parallel: 1  # Deploy one service at a time in production
+    steps:
+      - name: Deploy to production with canary
+        uses: ./.github/workflows/deploy-canary.yml
+        with:
+          service: ${{ matrix.component }}
+          environment: production
+          canary-percentage: 10
+          auto-promote: false
+
+      - name: Monitor canary deployment
+        run: |
+          # Extended monitoring for production canary
+          echo "Monitoring canary deployment for 20 minutes..."
+          
+          for i in {1..120}; do
+            echo "Monitoring iteration $i/120"
+            
+            # Check multiple metrics
+            ERROR_RATE=$(curl -s "http://prometheus:9090/api/v1/query?query=rate(http_requests_total{job=\"${{ matrix.component }}-canary\",code=~\"5..\"}[5m])" | jq -r '.data.result[0].value[1] // "0"')
+            LATENCY=$(curl -s "http://prometheus:9090/api/v1/query?query=histogram_quantile(0.95,rate(http_request_duration_seconds_bucket{job=\"${{ matrix.component }}-canary\"}[5m]))" | jq -r '.data.result[0].value[1] // "0"')
+            
+            # Business metrics
+            USER_ERRORS=$(curl -s "http://prometheus:9090/api/v1/query?query=increase(user_errors_total{service=\"${{ matrix.component }}\"}[5m])" | jq -r '.data.result[0].value[1] // "0"')
+            
+            echo "Canary Error Rate: $ERROR_RATE"
+            echo "Canary P95 Latency: $LATENCY"
+            echo "User Errors: $USER_ERRORS"
+            
+            # Strict production thresholds
+            if (( $(echo "$ERROR_RATE > 0.01" | bc -l) )); then
+              echo "❌ Canary error rate too high for production"
+              exit 1
+            fi
+            
+            if (( $(echo "$USER_ERRORS > 5" | bc -l) )); then
+              echo "❌ Too many user errors detected"
+              exit 1
+            fi
+            
+            sleep 10
+          done
+
+      - name: Promote canary to full deployment
+        run: |
+          # Promote canary after successful monitoring
+          echo "Promoting canary to full deployment"
+          
+          # This would typically call the canary workflow's promote step
+          # or use kubectl commands directly
+
+  post-deployment-verification:
+    runs-on: ubuntu-latest
+    needs: [detect-changes, deploy-production]
+    if: always()
+    steps:
+      - name: Run production smoke tests
+        run: |
+          # Comprehensive smoke tests for production
+          npm run test:smoke:production
+
+      - name: Update deployment tracking
+        run: |
+          # Record successful deployment
+          curl -X POST "${{ secrets.DEPLOYMENT_TRACKER_URL }}/api/deployments" \
+            -H "Content-Type: application/json" \
+            -H "Authorization: Bearer ${{ secrets.DEPLOYMENT_TRACKER_TOKEN }}" \
+            -d '{
+              "services": ${{ needs.detect-changes.outputs.services }},
+              "environment": "production",
+              "version": "${{ github.sha }}",
+              "status": "success",
+              "timestamp": "'$(date -u +%Y-%m-%dT%H:%M:%SZ)'",
+              "deploymentType": "canary",
+              "actor": "${{ github.actor }}"
+            }'
+
+      - name: Create release
+        if: success()
+        uses: actions/create-release@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: v${{ github.run_number }}
+          release_name: Production Release v${{ github.run_number }}
+          body: |
+            ## Services Deployed
+            ${{ needs.detect-changes.outputs.services }}
+            
+            ## Changes
+            ${{ github.event.head_commit.message }}
+            
+            ## Deployment Information
+            - **Commit**: ${{ github.sha }}
+            - **Environment**: Production
+            - **Deployment Type**: Canary
+            - **Deployed by**: ${{ github.actor }}
+            - **Deployment Time**: ${{ github.event.head_commit.timestamp }}
+
+  notify-deployment-status:
+    runs-on: ubuntu-latest
+    needs: [detect-changes, deploy-production, post-deployment-verification]
+    if: always()
+    steps:
+      - name: Notify deployment status
+        uses: 8398a7/action-slack@v3
+        with:
+          status: ${{ job.status }}
+          channel: '#deployments'
+          text: |
+            🚀 Production Deployment ${{ job.status == 'success' && 'Completed' || 'Failed' }}
+            
+            **Services**: ${{ needs.detect-changes.outputs.services }}
+            **Version**: ${{ github.sha }}
+            **Triggered by**: ${{ github.actor }}
+            **Branch**: ${{ github.ref_name }}
+            
+            ${{ job.status == 'success' && '✅ All services successfully deployed' || '❌ Deployment failed - check logs' }}
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}

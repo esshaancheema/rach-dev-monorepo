@@ -1,0 +1,33 @@
+{
+  "name": "@zoptal/auth",
+  "version": "1.0.0",
+  "private": true,
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": "./dist/index.js",
+    "./client": "./dist/client.js",
+    "./server": "./dist/server.js",
+    "./middleware": "./dist/middleware.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "clean": "rm -rf dist",
+    "type-check": "tsc --noEmit"
+  },
+  "dependencies": {
+    "jose": "^5.2.0",
+    "zod": "^3.22.0"
+  },
+  "devDependencies": {
+    "@types/react": "^18.2.0",
+    "@zoptal/tsconfig": "workspace:*",
+    "next": "^15.4.6",
+    "react": "^18.2.0",
+    "typescript": "^5.4.0"
+  },
+  "peerDependencies": {
+    "react": ">=16.8.0"
+  }
+}

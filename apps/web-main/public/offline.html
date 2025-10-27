@@ -1,0 +1,334 @@
+<!DOCTYPE html>
+<html lang="en" dir="ltr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Offline - Zoptal</title>
+    <meta name="description" content="You're currently offline. Please check your internet connection.">
+    <link rel="icon" href="/favicon.ico">
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: #333;
+            line-height: 1.6;
+        }
+
+        .container {
+            text-align: center;
+            padding: 2rem;
+            max-width: 500px;
+            background: white;
+            border-radius: 16px;
+            box-shadow: 0 20px 40px rgba(0, 0, 0, 0.1);
+            margin: 1rem;
+        }
+
+        .offline-icon {
+            width: 80px;
+            height: 80px;
+            margin: 0 auto 2rem;
+            background: #f3f4f6;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 2rem;
+        }
+
+        h1 {
+            font-size: 2rem;
+            font-weight: 700;
+            color: #1f2937;
+            margin-bottom: 1rem;
+        }
+
+        p {
+            color: #6b7280;
+            margin-bottom: 2rem;
+            font-size: 1.1rem;
+        }
+
+        .features {
+            background: #f9fafb;
+            border-radius: 12px;
+            padding: 1.5rem;
+            margin: 2rem 0;
+            text-align: left;
+        }
+
+        .features h3 {
+            color: #1f2937;
+            margin-bottom: 1rem;
+            font-size: 1.1rem;
+        }
+
+        .feature-list {
+            list-style: none;
+        }
+
+        .feature-list li {
+            margin-bottom: 0.5rem;
+            color: #6b7280;
+            position: relative;
+            padding-left: 1.5rem;
+        }
+
+        .feature-list li::before {
+            content: '✓';
+            position: absolute;
+            left: 0;
+            color: #10b981;
+            font-weight: bold;
+        }
+
+        .buttons {
+            display: flex;
+            gap: 1rem;
+            justify-content: center;
+            flex-wrap: wrap;
+        }
+
+        .btn {
+            padding: 0.75rem 1.5rem;
+            border-radius: 8px;
+            text-decoration: none;
+            font-weight: 600;
+            display: inline-flex;
+            align-items: center;
+            gap: 0.5rem;
+            transition: all 0.2s;
+            border: none;
+            cursor: pointer;
+            font-size: 0.9rem;
+        }
+
+        .btn-primary {
+            background: #2563eb;
+            color: white;
+        }
+
+        .btn-primary:hover {
+            background: #1d4ed8;
+            transform: translateY(-1px);
+        }
+
+        .btn-secondary {
+            background: #f3f4f6;
+            color: #374151;
+        }
+
+        .btn-secondary:hover {
+            background: #e5e7eb;
+        }
+
+        .status {
+            margin-top: 2rem;
+            padding: 1rem;
+            background: #fef3c7;
+            border-radius: 8px;
+            border-left: 4px solid #f59e0b;
+        }
+
+        .status-indicator {
+            display: inline-block;
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            margin-right: 0.5rem;
+            animation: pulse 2s infinite;
+        }
+
+        .offline .status-indicator {
+            background: #ef4444;
+        }
+
+        .online .status-indicator {
+            background: #10b981;
+        }
+
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
+
+        .tips {
+            margin-top: 2rem;
+            text-align: left;
+            background: #eff6ff;
+            padding: 1.5rem;
+            border-radius: 12px;
+        }
+
+        .tips h4 {
+            color: #1e40af;
+            margin-bottom: 0.5rem;
+        }
+
+        .tips ul {
+            color: #1e40af;
+            margin-left: 1rem;
+        }
+
+        .tips li {
+            margin-bottom: 0.25rem;
+        }
+
+        @media (max-width: 640px) {
+            .container {
+                margin: 0.5rem;
+                padding: 1.5rem;
+            }
+
+            h1 {
+                font-size: 1.5rem;
+            }
+
+            .buttons {
+                flex-direction: column;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="offline-icon">
+            📡
+        </div>
+        
+        <h1>You're Offline</h1>
+        <p>Don't worry! You can still browse cached content while offline.</p>
+
+        <div class="features">
+            <h3>Available Offline:</h3>
+            <ul class="feature-list">
+                <li>Previously visited pages</li>
+                <li>Service information</li>
+                <li>Contact details</li>
+                <li>Case studies you've viewed</li>
+                <li>Blog posts you've read</li>
+            </ul>
+        </div>
+
+        <div class="status" id="connectionStatus">
+            <span class="status-indicator offline"></span>
+            <span id="statusText">Checking connection...</span>
+        </div>
+
+        <div class="buttons">
+            <button onclick="window.location.reload()" class="btn btn-primary">
+                🔄 Retry Connection
+            </button>
+            <a href="/" class="btn btn-secondary">
+                🏠 Go Home
+            </a>
+        </div>
+
+        <div class="tips">
+            <h4>💡 Tips while offline:</h4>
+            <ul>
+                <li>Try refreshing the page when your connection returns</li>
+                <li>Check your internet connection settings</li>
+                <li>Move to an area with better signal</li>
+                <li>Contact our team at <a href="tel:+1234567890">+1 (234) 567-890</a></li>
+            </ul>
+        </div>
+    </div>
+
+    <script>
+        // Connection status monitoring
+        function updateConnectionStatus() {
+            const statusElement = document.getElementById('connectionStatus');
+            const statusText = document.getElementById('statusText');
+            const indicator = statusElement.querySelector('.status-indicator');
+            
+            if (navigator.onLine) {
+                statusElement.className = 'status online';
+                indicator.className = 'status-indicator online';
+                statusText.textContent = 'Connection restored! You can now browse normally.';
+                
+                // Auto-reload after showing online status
+                setTimeout(() => {
+                    window.location.reload();
+                }, 2000);
+            } else {
+                statusElement.className = 'status offline';
+                indicator.className = 'status-indicator offline';
+                statusText.textContent = 'No internet connection detected.';
+            }
+        }
+
+        // Initial status check
+        updateConnectionStatus();
+
+        // Listen for connection changes
+        window.addEventListener('online', updateConnectionStatus);
+        window.addEventListener('offline', updateConnectionStatus);
+
+        // Periodic connection check
+        setInterval(() => {
+            // Try to fetch a small resource to test connectivity
+            fetch('/favicon.ico', { 
+                method: 'HEAD',
+                cache: 'no-cache'
+            })
+            .then(() => {
+                if (!navigator.onLine) {
+                    // Force online status if fetch succeeds
+                    updateConnectionStatus();
+                }
+            })
+            .catch(() => {
+                // Connection failed
+                if (navigator.onLine) {
+                    updateConnectionStatus();
+                }
+            });
+        }, 10000); // Check every 10 seconds
+
+        // Service Worker communication
+        if ('serviceWorker' in navigator) {
+            navigator.serviceWorker.addEventListener('message', (event) => {
+                if (event.data && event.data.type === 'CONNECTIVITY_CHANGE') {
+                    updateConnectionStatus();
+                }
+            });
+        }
+
+        // Keyboard shortcuts
+        document.addEventListener('keydown', (event) => {
+            if (event.key === 'F5' || (event.ctrlKey && event.key === 'r')) {
+                event.preventDefault();
+                window.location.reload();
+            }
+            
+            if (event.key === 'Escape') {
+                window.location.href = '/';
+            }
+        });
+
+        // Show last update time
+        const lastUpdate = localStorage.getItem('lastPageUpdate');
+        if (lastUpdate) {
+            const updateTime = new Date(parseInt(lastUpdate));
+            const timeString = updateTime.toLocaleString();
+            
+            const lastUpdateElement = document.createElement('div');
+            lastUpdateElement.style.cssText = 'margin-top: 1rem; font-size: 0.8rem; color: #6b7280;';
+            lastUpdateElement.textContent = `Last updated: ${timeString}`;
+            
+            document.querySelector('.container').appendChild(lastUpdateElement);
+        }
+    </script>
+</body>
+</html>

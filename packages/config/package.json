@@ -1,0 +1,48 @@
+{
+  "name": "@zoptal/config",
+  "version": "0.1.0",
+  "description": "Shared configuration constants for Zoptal monorepo",
+  "main": "dist/index.js",
+  "module": "dist/index.esm.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/index.esm.js",
+      "require": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsup src/index.ts --format cjs,esm --dts",
+    "build:watch": "tsup src/index.ts --format cjs,esm --dts --watch",
+    "dev": "tsup src/index.ts --format cjs,esm --dts --watch",
+    "clean": "rm -rf dist",
+    "type-check": "tsc --noEmit",
+    "lint": "eslint src --ext .ts",
+    "lint:fix": "eslint src --ext .ts --fix"
+  },
+  "keywords": [
+    "config",
+    "constants",
+    "zoptal",
+    "shared"
+  ],
+  "author": "Zoptal Team",
+  "license": "MIT",
+  "dependencies": {
+    "dotenv": "^16.4.1",
+    "zod": "^3.22.4"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.19",
+    "tsup": "^8.0.2",
+    "typescript": "^5.3.3"
+  },
+  "publishConfig": {
+    "access": "restricted"
+  }
+}

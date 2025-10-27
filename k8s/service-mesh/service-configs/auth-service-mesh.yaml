@@ -1,0 +1,219 @@
+# Istio Service Mesh Configuration for Auth Service
+
+apiVersion: networking.istio.io/v1beta1
+kind: VirtualService
+metadata:
+  name: auth-service
+  namespace: zoptal-production
+spec:
+  hosts:
+  - auth-service
+  - auth.zoptal.com
+  gateways:
+  - zoptal-gateway
+  - mesh
+  http:
+  - match:
+    - uri:
+        prefix: /api/auth
+    route:
+    - destination:
+        host: auth-service
+        port:
+          number: 3001
+    timeout: 30s
+    retries:
+      attempts: 3
+      perTryTimeout: 10s
+      retryOn: 5xx,gateway-error,connect-failure,refused-stream
+    fault:
+      delay:
+        percentage:
+          value: 0.1
+        fixedDelay: 5s
+  - match:
+    - uri:
+        prefix: /health
+    route:
+    - destination:
+        host: auth-service
+        port:
+          number: 3001
+    timeout: 5s
+
+---
+apiVersion: networking.istio.io/v1beta1
+kind: DestinationRule
+metadata:
+  name: auth-service
+  namespace: zoptal-production
+spec:
+  host: auth-service
+  trafficPolicy:
+    connectionPool:
+      tcp:
+        maxConnections: 50
+      http:
+        http1MaxPendingRequests: 10
+        maxRequestsPerConnection: 10
+        maxRetries: 3
+        consecutiveGatewayErrors: 5
+        interval: 30s
+        baseEjectionTime: 30s
+        maxEjectionPercent: 50
+    circuitBreaker:
+      consecutiveGatewayErrors: 5
+      consecutive5xxErrors: 5
+      interval: 30s
+      baseEjectionTime: 30s
+      maxEjectionPercent: 50
+    outlierDetection:
+      consecutiveGatewayErrors: 5
+      consecutive5xxErrors: 5
+      interval: 30s
+      baseEjectionTime: 30s
+      maxEjectionPercent: 50
+      minHealthPercent: 50
+  subsets:
+  - name: v1
+    labels:
+      version: v1
+  - name: v2
+    labels:
+      version: v2
+  - name: canary
+    labels:
+      track: canary
+  - name: stable
+    labels:
+      track: stable
+
+---
+apiVersion: security.istio.io/v1beta1
+kind: PeerAuthentication
+metadata:
+  name: auth-service
+  namespace: zoptal-production
+spec:
+  selector:
+    matchLabels:
+      app: auth-service
+  mtls:
+    mode: STRICT
+
+---
+apiVersion: security.istio.io/v1beta1
+kind: AuthorizationPolicy
+metadata:
+  name: auth-service
+  namespace: zoptal-production
+spec:
+  selector:
+    matchLabels:
+      app: auth-service
+  rules:
+  - from:
+    - source:
+        principals: ["cluster.local/ns/zoptal-production/sa/default"]
+    - source:
+        principals: ["cluster.local/ns/istio-system/sa/istio-ingressgateway-service-account"]
+  - to:
+    - operation:
+        methods: ["GET"]
+        paths: ["/health", "/ready", "/metrics"]
+  - to:
+    - operation:
+        methods: ["POST"]
+        paths: ["/api/auth/login", "/api/auth/register"]
+  - to:
+    - operation:
+        methods: ["GET", "POST", "PUT", "DELETE"]
+        paths: ["/api/auth/*"]
+    when:
+    - key: source.ip
+      notValues: ["0.0.0.0/0"]
+
+---
+apiVersion: telemetry.istio.io/v1alpha1
+kind: Telemetry
+metadata:
+  name: auth-service
+  namespace: zoptal-production
+spec:
+  selector:
+    matchLabels:
+      app: auth-service
+  metrics:
+  - providers:
+    - name: prometheus
+  - overrides:
+    - match:
+        metric: requests_total
+      tagOverrides:
+        request_protocol:
+          value: "http"
+        service_name:
+          value: "auth-service"
+  accessLogging:
+  - providers:
+    - name: otel
+  - overrides:
+    - match:
+        mode: CLIENT
+      formatOverride:
+        text: |
+          [%START_TIME%] "%REQ(:METHOD)% %REQ(X-ENVOY-ORIGINAL-PATH?:PATH)% %PROTOCOL%"
+          %RESPONSE_CODE% %RESPONSE_FLAGS% %BYTES_RECEIVED% %BYTES_SENT%
+          %DURATION% %RESP(X-ENVOY-UPSTREAM-SERVICE-TIME)% "%REQ(X-FORWARDED-FOR)%"
+          "%REQ(USER-AGENT)%" "%REQ(X-REQUEST-ID)%" "%REQ(:AUTHORITY)%" "%UPSTREAM_HOST%"
+  tracing:
+  - providers:
+    - name: jaeger
+
+---
+# Rate limiting configuration
+apiVersion: networking.istio.io/v1alpha3
+kind: EnvoyFilter
+metadata:
+  name: auth-service-ratelimit
+  namespace: zoptal-production
+spec:
+  workloadSelector:
+    labels:
+      app: auth-service
+  configPatches:
+  - applyTo: HTTP_FILTER
+    match:
+      context: SIDECAR_INBOUND
+      listener:
+        filterChain:
+          filter:
+            name: "envoy.filters.network.http_connection_manager"
+    patch:
+      operation: INSERT_BEFORE
+      value:
+        name: envoy.filters.http.local_ratelimit
+        typed_config:
+          "@type": type.googleapis.com/udpa.type.v1.TypedStruct
+          type_url: type.googleapis.com/envoy.extensions.filters.http.local_ratelimit.v3.LocalRateLimit
+          value:
+            stat_prefix: auth_service_rate_limiter
+            token_bucket:
+              max_tokens: 100
+              tokens_per_fill: 100
+              fill_interval: 60s
+            filter_enabled:
+              runtime_key: local_rate_limit_enabled
+              default_value:
+                numerator: 100
+                denominator: HUNDRED
+            filter_enforced:
+              runtime_key: local_rate_limit_enforced
+              default_value:
+                numerator: 100
+                denominator: HUNDRED
+            response_headers_to_add:
+            - append: false
+              header:
+                key: x-local-rate-limit
+                value: 'true'

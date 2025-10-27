@@ -1,0 +1,1163 @@
+# ELK Stack (Elasticsearch, Logstash, Kibana) Configuration
+# Comprehensive logging aggregation for Zoptal Platform
+
+---
+# Elasticsearch ConfigMap
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: elasticsearch-config
+  namespace: zoptal-production
+  labels:
+    app.kubernetes.io/name: elasticsearch
+    app.kubernetes.io/component: config
+data:
+  elasticsearch.yml: |
+    cluster.name: "zoptal-logs"
+    network.host: 0.0.0.0
+    
+    # Discovery settings
+    discovery.type: zen
+    discovery.zen.minimum_master_nodes: 2
+    discovery.zen.ping.unicast.hosts: ["elasticsearch-master-0", "elasticsearch-master-1", "elasticsearch-master-2"]
+    
+    # Node settings
+    node.name: ${HOSTNAME}
+    node.master: ${NODE_MASTER:true}
+    node.data: ${NODE_DATA:true}
+    node.ingest: ${NODE_INGEST:true}
+    
+    # Path settings
+    path.data: /usr/share/elasticsearch/data
+    path.logs: /usr/share/elasticsearch/logs
+    
+    # Memory settings
+    bootstrap.memory_lock: false
+    
+    # Security settings
+    xpack.security.enabled: false
+    xpack.monitoring.collection.enabled: true
+    
+    # Index settings
+    action.destructive_requires_name: true
+    
+    # HTTP settings
+    http.port: 9200
+    http.cors.enabled: true
+    http.cors.allow-origin: "*"
+    
+    # Transport settings
+    transport.tcp.port: 9300
+    
+    # Index lifecycle management
+    xpack.ilm.enabled: true
+    
+  jvm.options: |
+    -Xms1g
+    -Xmx1g
+    -XX:+UseConcMarkSweepGC
+    -XX:CMSInitiatingOccupancyFraction=75
+    -XX:+UseCMSInitiatingOccupancyOnly
+    -Djava.awt.headless=true
+    -Dfile.encoding=UTF-8
+    -Djna.nosys=true
+    -XX:-OmitStackTraceInFastThrow
+    -Dio.netty.noUnsafe=true
+    -Dio.netty.noKeySetOptimization=true
+    -Dio.netty.recycler.maxCapacityPerThread=0
+    -Dlog4j.shutdownHookEnabled=false
+    -Dlog4j2.disable.jmx=true
+    -Djava.io.tmpdir=${ES_TMPDIR}
+    -XX:+HeapDumpOnOutOfMemoryError
+    -XX:HeapDumpPath=data
+    -XX:ErrorFile=logs/hs_err_pid%p.log
+    -XX:+PrintGCDetails
+    -XX:+PrintGCTimeStamps
+    -XX:+PrintGCDateStamps
+    -XX:+PrintClassHistogram
+    -XX:+PrintTenuringDistribution
+    -XX:+PrintGCApplicationStoppedTime
+    -Xloggc:logs/gc.log
+    -XX:+UseGCLogFileRotation
+    -XX:NumberOfGCLogFiles=32
+    -XX:GCLogFileSize=64m
+
+---
+# Elasticsearch Master StatefulSet
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: elasticsearch-master
+  namespace: zoptal-production
+  labels:
+    app.kubernetes.io/name: elasticsearch
+    app.kubernetes.io/component: master
+spec:
+  serviceName: elasticsearch-master
+  replicas: 3
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: elasticsearch
+      app.kubernetes.io/component: master
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: elasticsearch
+        app.kubernetes.io/component: master
+    spec:
+      serviceAccountName: elasticsearch
+      securityContext:
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+      initContainers:
+      - name: configure-sysctl
+        image: busybox:1.35
+        command:
+        - sysctl
+        - -w
+        - vm.max_map_count=262144
+        securityContext:
+          privileged: true
+      - name: fix-permissions
+        image: busybox:1.35
+        command:
+        - sh
+        - -c
+        - chown -R 1000:1000 /usr/share/elasticsearch/data
+        securityContext:
+          privileged: true
+        volumeMounts:
+        - name: elasticsearch-data
+          mountPath: /usr/share/elasticsearch/data
+      containers:
+      - name: elasticsearch
+        image: docker.elastic.co/elasticsearch/elasticsearch:8.11.0
+        ports:
+        - containerPort: 9200
+          name: http
+        - containerPort: 9300
+          name: transport
+        env:
+        - name: node.name
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name
+        - name: cluster.initial_master_nodes
+          value: "elasticsearch-master-0,elasticsearch-master-1,elasticsearch-master-2"
+        - name: discovery.seed_hosts
+          value: "elasticsearch-master-headless"
+        - name: cluster.name
+          value: "zoptal-logs"
+        - name: network.host
+          value: "0.0.0.0"
+        - name: ES_JAVA_OPTS
+          value: "-Xms1g -Xmx1g"
+        - name: node.roles
+          value: "master,data,ingest"
+        volumeMounts:
+        - name: elasticsearch-data
+          mountPath: /usr/share/elasticsearch/data
+        - name: elasticsearch-config
+          mountPath: /usr/share/elasticsearch/config/elasticsearch.yml
+          subPath: elasticsearch.yml
+        - name: elasticsearch-config
+          mountPath: /usr/share/elasticsearch/config/jvm.options
+          subPath: jvm.options
+        resources:
+          requests:
+            memory: "2Gi"
+            cpu: "500m"
+          limits:
+            memory: "2Gi"
+            cpu: "1000m"
+        livenessProbe:
+          httpGet:
+            path: /_cluster/health
+            port: 9200
+          initialDelaySeconds: 120
+          periodSeconds: 30
+          timeoutSeconds: 10
+          failureThreshold: 3
+        readinessProbe:
+          httpGet:
+            path: /_cluster/health?wait_for_status=yellow&timeout=5s
+            port: 9200
+          initialDelaySeconds: 60
+          periodSeconds: 10
+          timeoutSeconds: 5
+      volumes:
+      - name: elasticsearch-config
+        configMap:
+          name: elasticsearch-config
+  volumeClaimTemplates:
+  - metadata:
+      name: elasticsearch-data
+    spec:
+      accessModes: ["ReadWriteOnce"]
+      storageClassName: fast-ssd
+      resources:
+        requests:
+          storage: 50Gi
+
+---
+# Elasticsearch Master Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: elasticsearch-master
+  namespace: zoptal-production
+  labels:
+    app.kubernetes.io/name: elasticsearch
+    app.kubernetes.io/component: master
+spec:
+  type: ClusterIP
+  ports:
+  - port: 9200
+    targetPort: 9200
+    name: http
+  - port: 9300
+    targetPort: 9300
+    name: transport
+  selector:
+    app.kubernetes.io/name: elasticsearch
+    app.kubernetes.io/component: master
+
+---
+# Elasticsearch Headless Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: elasticsearch-master-headless
+  namespace: zoptal-production
+  labels:
+    app.kubernetes.io/name: elasticsearch
+    app.kubernetes.io/component: master
+spec:
+  clusterIP: None
+  ports:
+  - port: 9200
+    targetPort: 9200
+    name: http
+  - port: 9300
+    targetPort: 9300
+    name: transport
+  selector:
+    app.kubernetes.io/name: elasticsearch
+    app.kubernetes.io/component: master
+
+---
+# Logstash ConfigMap
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: logstash-config
+  namespace: zoptal-production
+  labels:
+    app.kubernetes.io/name: logstash
+    app.kubernetes.io/component: config
+data:
+  logstash.yml: |
+    http.host: "0.0.0.0"
+    path.config: /usr/share/logstash/pipeline
+    pipeline.workers: 4
+    pipeline.batch.size: 1000
+    pipeline.batch.delay: 50
+    
+    # Monitoring
+    xpack.monitoring.enabled: true
+    xpack.monitoring.elasticsearch.hosts: ["http://elasticsearch-master:9200"]
+    
+    # Dead letter queue
+    dead_letter_queue.enable: true
+    dead_letter_queue.max_bytes: 1gb
+    
+  pipelines.yml: |
+    - pipeline.id: application-logs
+      path.config: "/usr/share/logstash/pipeline/application-logs.conf"
+      pipeline.workers: 2
+    - pipeline.id: kubernetes-logs
+      path.config: "/usr/share/logstash/pipeline/kubernetes-logs.conf"
+      pipeline.workers: 2
+    - pipeline.id: nginx-logs
+      path.config: "/usr/share/logstash/pipeline/nginx-logs.conf"
+      pipeline.workers: 1
+      
+  jvm.options: |
+    -Xms1g
+    -Xmx1g
+    -XX:+UseG1GC
+    -XX:MaxGCPauseMillis=250
+    -XX:G1HeapRegionSize=16m
+    -XX:+UnlockExperimentalVMOptions
+    -XX:+UseCGroupMemoryLimitForHeap
+    -Djava.awt.headless=true
+    -Dfile.encoding=UTF-8
+    -Djruby.compile.invokedynamic=true
+    -Djruby.jit.threshold=0
+    -XX:+HeapDumpOnOutOfMemoryError
+    -Djava.security.egd=file:/dev/urandom
+
+  application-logs.conf: |
+    input {
+      beats {
+        port => 5044
+        host => "0.0.0.0"
+      }
+    }
+    
+    filter {
+      # Parse JSON logs from applications
+      if [fields][log_type] == "application" {
+        json {
+          source => "message"
+        }
+        
+        # Add timestamp
+        date {
+          match => [ "timestamp", "ISO8601" ]
+          target => "@timestamp"
+        }
+        
+        # Extract service information
+        if [kubernetes] {
+          mutate {
+            add_field => { "service_name" => "%{[kubernetes][labels][app.kubernetes.io/name]}" }
+            add_field => { "service_version" => "%{[kubernetes][labels][app.kubernetes.io/version]}" }
+            add_field => { "namespace" => "%{[kubernetes][namespace]}" }
+            add_field => { "pod_name" => "%{[kubernetes][pod][name]}" }
+            add_field => { "node_name" => "%{[kubernetes][node][name]}" }
+          }
+        }
+        
+        # Parse log level
+        if [level] {
+          mutate {
+            uppercase => [ "level" ]
+          }
+        }
+        
+        # Extract user information if present
+        if [user_id] {
+          mutate {
+            add_field => { "user_context" => "%{user_id}" }
+          }
+        }
+        
+        # Extract request information
+        if [request_id] {
+          mutate {
+            add_field => { "request_context" => "%{request_id}" }
+          }
+        }
+        
+        # Parse error information
+        if [error] {
+          mutate {
+            add_field => { "error_type" => "%{[error][type]}" }
+            add_field => { "error_message" => "%{[error][message]}" }
+          }
+        }
+      }
+    }
+    
+    output {
+      elasticsearch {
+        hosts => ["http://elasticsearch-master:9200"]
+        index => "zoptal-application-logs-%{+YYYY.MM.dd}"
+        template_name => "zoptal-application-logs"
+        template_pattern => "zoptal-application-logs-*"
+        template => "/usr/share/logstash/templates/application-logs-template.json"
+      }
+    }
+
+  kubernetes-logs.conf: |
+    input {
+      beats {
+        port => 5045
+        host => "0.0.0.0"
+      }
+    }
+    
+    filter {
+      # Parse Kubernetes container logs
+      if [fields][log_type] == "kubernetes" {
+        # Parse container log format
+        grok {
+          match => { "message" => "%{TIMESTAMP_ISO8601:timestamp} %{WORD:stream} %{WORD:logtag} %{GREEDYDATA:log_message}" }
+          remove_field => ["message"]
+        }
+        
+        # Set timestamp
+        date {
+          match => [ "timestamp", "ISO8601" ]
+          target => "@timestamp"
+        }
+        
+        # Parse JSON if the log message is JSON
+        if [log_message] =~ /^\{.*\}$/ {
+          json {
+            source => "log_message"
+            target => "parsed_log"
+          }
+        }
+        
+        # Add Kubernetes metadata
+        if [kubernetes] {
+          mutate {
+            add_field => { "k8s_namespace" => "%{[kubernetes][namespace]}" }
+            add_field => { "k8s_pod" => "%{[kubernetes][pod][name]}" }
+            add_field => { "k8s_container" => "%{[kubernetes][container][name]}" }
+            add_field => { "k8s_node" => "%{[kubernetes][node][name]}" }
+          }
+        }
+        
+        # Filter out noisy logs
+        if [k8s_container] in ["filebeat", "logstash", "fluentd"] {
+          drop { }
+        }
+      }
+    }
+    
+    output {
+      elasticsearch {
+        hosts => ["http://elasticsearch-master:9200"]
+        index => "zoptal-kubernetes-logs-%{+YYYY.MM.dd}"
+        template_name => "zoptal-kubernetes-logs"
+        template_pattern => "zoptal-kubernetes-logs-*"
+        template => "/usr/share/logstash/templates/kubernetes-logs-template.json"
+      }
+    }
+
+  nginx-logs.conf: |
+    input {
+      beats {
+        port => 5046
+        host => "0.0.0.0"
+      }
+    }
+    
+    filter {
+      if [fields][log_type] == "nginx" {
+        # Parse Nginx access logs
+        grok {
+          match => { "message" => "%{NGINXACCESS}" }
+        }
+        
+        # Convert response code to integer
+        mutate {
+          convert => { "response" => "integer" }
+          convert => { "bytes" => "integer" }
+        }
+        
+        # Parse response time
+        if [request_time] {
+          mutate {
+            convert => { "request_time" => "float" }
+          }
+        }
+        
+        # GeoIP lookup for client IP
+        geoip {
+          source => "clientip"
+          target => "geoip"
+        }
+        
+        # User agent parsing
+        useragent {
+          source => "agent"
+          target => "user_agent"
+        }
+        
+        # Add response status category
+        if [response] >= 200 and [response] < 300 {
+          mutate { add_field => { "response_category" => "success" } }
+        } else if [response] >= 300 and [response] < 400 {
+          mutate { add_field => { "response_category" => "redirect" } }
+        } else if [response] >= 400 and [response] < 500 {
+          mutate { add_field => { "response_category" => "client_error" } }
+        } else if [response] >= 500 {
+          mutate { add_field => { "response_category" => "server_error" } }
+        }
+      }
+    }
+    
+    output {
+      elasticsearch {
+        hosts => ["http://elasticsearch-master:9200"]
+        index => "zoptal-nginx-logs-%{+YYYY.MM.dd}"
+        template_name => "zoptal-nginx-logs"
+        template_pattern => "zoptal-nginx-logs-*"
+        template => "/usr/share/logstash/templates/nginx-logs-template.json"
+      }
+    }
+
+---
+# Logstash Templates ConfigMap
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: logstash-templates
+  namespace: zoptal-production
+  labels:
+    app.kubernetes.io/name: logstash
+    app.kubernetes.io/component: templates
+data:
+  application-logs-template.json: |
+    {
+      "index_patterns": ["zoptal-application-logs-*"],
+      "settings": {
+        "number_of_shards": 2,
+        "number_of_replicas": 1,
+        "index.lifecycle.name": "zoptal-logs-policy",
+        "index.lifecycle.rollover_alias": "zoptal-application-logs"
+      },
+      "mappings": {
+        "properties": {
+          "@timestamp": { "type": "date" },
+          "level": { "type": "keyword" },
+          "message": { "type": "text" },
+          "service_name": { "type": "keyword" },
+          "service_version": { "type": "keyword" },
+          "namespace": { "type": "keyword" },
+          "pod_name": { "type": "keyword" },
+          "node_name": { "type": "keyword" },
+          "user_context": { "type": "keyword" },
+          "request_context": { "type": "keyword" },
+          "error_type": { "type": "keyword" },
+          "error_message": { "type": "text" }
+        }
+      }
+    }
+    
+  kubernetes-logs-template.json: |
+    {
+      "index_patterns": ["zoptal-kubernetes-logs-*"],
+      "settings": {
+        "number_of_shards": 2,
+        "number_of_replicas": 1,
+        "index.lifecycle.name": "zoptal-logs-policy",
+        "index.lifecycle.rollover_alias": "zoptal-kubernetes-logs"
+      },
+      "mappings": {
+        "properties": {
+          "@timestamp": { "type": "date" },
+          "stream": { "type": "keyword" },
+          "logtag": { "type": "keyword" },
+          "log_message": { "type": "text" },
+          "k8s_namespace": { "type": "keyword" },
+          "k8s_pod": { "type": "keyword" },
+          "k8s_container": { "type": "keyword" },
+          "k8s_node": { "type": "keyword" }
+        }
+      }
+    }
+    
+  nginx-logs-template.json: |
+    {
+      "index_patterns": ["zoptal-nginx-logs-*"],
+      "settings": {
+        "number_of_shards": 1,
+        "number_of_replicas": 1,
+        "index.lifecycle.name": "zoptal-logs-policy",
+        "index.lifecycle.rollover_alias": "zoptal-nginx-logs"
+      },
+      "mappings": {
+        "properties": {
+          "@timestamp": { "type": "date" },
+          "clientip": { "type": "ip" },
+          "ident": { "type": "keyword" },
+          "auth": { "type": "keyword" },
+          "timestamp": { "type": "date" },
+          "verb": { "type": "keyword" },
+          "request": { "type": "text" },
+          "httpversion": { "type": "keyword" },
+          "response": { "type": "integer" },
+          "bytes": { "type": "integer" },
+          "referrer": { "type": "text" },
+          "agent": { "type": "text" },
+          "request_time": { "type": "float" },
+          "response_category": { "type": "keyword" },
+          "geoip": {
+            "properties": {
+              "country_name": { "type": "keyword" },
+              "city_name": { "type": "keyword" },
+              "location": { "type": "geo_point" }
+            }
+          }
+        }
+      }
+    }
+
+---
+# Logstash Deployment
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: logstash
+  namespace: zoptal-production
+  labels:
+    app.kubernetes.io/name: logstash
+    app.kubernetes.io/component: processor
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: logstash
+      app.kubernetes.io/component: processor
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: logstash
+        app.kubernetes.io/component: processor
+    spec:
+      serviceAccountName: logstash
+      containers:
+      - name: logstash
+        image: docker.elastic.co/logstash/logstash:8.11.0
+        ports:
+        - containerPort: 5044
+          name: beats-app
+        - containerPort: 5045
+          name: beats-k8s
+        - containerPort: 5046
+          name: beats-nginx
+        - containerPort: 9600
+          name: http
+        env:
+        - name: LS_JAVA_OPTS
+          value: "-Xms1g -Xmx1g"
+        volumeMounts:
+        - name: logstash-config
+          mountPath: /usr/share/logstash/config/logstash.yml
+          subPath: logstash.yml
+        - name: logstash-config
+          mountPath: /usr/share/logstash/config/pipelines.yml
+          subPath: pipelines.yml
+        - name: logstash-config
+          mountPath: /usr/share/logstash/config/jvm.options
+          subPath: jvm.options
+        - name: logstash-config
+          mountPath: /usr/share/logstash/pipeline/application-logs.conf
+          subPath: application-logs.conf
+        - name: logstash-config
+          mountPath: /usr/share/logstash/pipeline/kubernetes-logs.conf
+          subPath: kubernetes-logs.conf
+        - name: logstash-config
+          mountPath: /usr/share/logstash/pipeline/nginx-logs.conf
+          subPath: nginx-logs.conf
+        - name: logstash-templates
+          mountPath: /usr/share/logstash/templates
+        resources:
+          requests:
+            memory: "2Gi"
+            cpu: "500m"
+          limits:
+            memory: "2Gi"
+            cpu: "1000m"
+        livenessProbe:
+          httpGet:
+            path: /
+            port: 9600
+          initialDelaySeconds: 120
+          periodSeconds: 30
+          timeoutSeconds: 10
+          failureThreshold: 3
+        readinessProbe:
+          httpGet:
+            path: /
+            port: 9600
+          initialDelaySeconds: 60
+          periodSeconds: 10
+          timeoutSeconds: 5
+      volumes:
+      - name: logstash-config
+        configMap:
+          name: logstash-config
+      - name: logstash-templates
+        configMap:
+          name: logstash-templates
+
+---
+# Logstash Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: logstash
+  namespace: zoptal-production
+  labels:
+    app.kubernetes.io/name: logstash
+    app.kubernetes.io/component: processor
+spec:
+  type: ClusterIP
+  ports:
+  - port: 5044
+    targetPort: 5044
+    name: beats-app
+  - port: 5045
+    targetPort: 5045
+    name: beats-k8s
+  - port: 5046
+    targetPort: 5046
+    name: beats-nginx
+  - port: 9600
+    targetPort: 9600
+    name: http
+  selector:
+    app.kubernetes.io/name: logstash
+    app.kubernetes.io/component: processor
+
+---
+# Kibana ConfigMap
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: kibana-config
+  namespace: zoptal-production
+  labels:
+    app.kubernetes.io/name: kibana
+    app.kubernetes.io/component: config
+data:
+  kibana.yml: |
+    server.name: kibana
+    server.host: "0.0.0.0"
+    server.port: 5601
+    
+    elasticsearch.hosts: ["http://elasticsearch-master:9200"]
+    
+    # Logging
+    logging.dest: stdout
+    logging.silent: false
+    logging.quiet: false
+    logging.verbose: false
+    
+    # Security
+    server.ssl.enabled: false
+    
+    # Monitoring
+    monitoring.ui.container.elasticsearch.enabled: true
+    
+    # Advanced settings
+    server.maxPayloadBytes: 1048576
+    server.basePath: ""
+    server.rewriteBasePath: false
+    
+    # Default index patterns
+    kibana.defaultAppId: "discover"
+    
+    # Save objects
+    savedObjects.maxImportPayloadBytes: 26214400
+    
+    # Maps
+    map.includeElasticMapsService: true
+
+---
+# Kibana Deployment
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kibana
+  namespace: zoptal-production
+  labels:
+    app.kubernetes.io/name: kibana
+    app.kubernetes.io/component: visualization
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: kibana
+      app.kubernetes.io/component: visualization
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: kibana
+        app.kubernetes.io/component: visualization
+    spec:
+      serviceAccountName: kibana
+      containers:
+      - name: kibana
+        image: docker.elastic.co/kibana/kibana:8.11.0
+        ports:
+        - containerPort: 5601
+          name: http
+        env:
+        - name: ELASTICSEARCH_HOSTS
+          value: "http://elasticsearch-master:9200"
+        - name: SERVER_NAME
+          value: "kibana"
+        - name: SERVER_BASEPATH
+          value: ""
+        volumeMounts:
+        - name: kibana-config
+          mountPath: /usr/share/kibana/config/kibana.yml
+          subPath: kibana.yml
+        resources:
+          requests:
+            memory: "512Mi"
+            cpu: "250m"
+          limits:
+            memory: "1Gi"
+            cpu: "500m"
+        livenessProbe:
+          httpGet:
+            path: /api/status
+            port: 5601
+          initialDelaySeconds: 120
+          periodSeconds: 30
+          timeoutSeconds: 10
+          failureThreshold: 3
+        readinessProbe:
+          httpGet:
+            path: /api/status
+            port: 5601
+          initialDelaySeconds: 60
+          periodSeconds: 10
+          timeoutSeconds: 5
+      volumes:
+      - name: kibana-config
+        configMap:
+          name: kibana-config
+
+---
+# Kibana Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: kibana
+  namespace: zoptal-production
+  labels:
+    app.kubernetes.io/name: kibana
+    app.kubernetes.io/component: visualization
+spec:
+  type: ClusterIP
+  ports:
+  - port: 5601
+    targetPort: 5601
+    name: http
+  selector:
+    app.kubernetes.io/name: kibana
+    app.kubernetes.io/component: visualization
+
+---
+# Filebeat ConfigMap for Application Logs
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: filebeat-config
+  namespace: zoptal-production
+  labels:
+    app.kubernetes.io/name: filebeat
+    app.kubernetes.io/component: shipper
+data:
+  filebeat.yml: |
+    filebeat.inputs:
+    - type: container
+      paths:
+        - /var/log/containers/*zoptal*.log
+      fields:
+        log_type: application
+      fields_under_root: true
+      processors:
+      - add_kubernetes_metadata:
+          host: ${NODE_NAME}
+          matchers:
+          - logs_path:
+              logs_path: "/var/log/containers/"
+    
+    - type: container
+      paths:
+        - /var/log/containers/*ingress-nginx*.log
+      fields:
+        log_type: nginx
+      fields_under_root: true
+      processors:
+      - add_kubernetes_metadata:
+          host: ${NODE_NAME}
+          matchers:
+          - logs_path:
+              logs_path: "/var/log/containers/"
+    
+    - type: container
+      paths:
+        - /var/log/containers/*.log
+      exclude_lines: ['zoptal', 'ingress-nginx']
+      fields:
+        log_type: kubernetes
+      fields_under_root: true
+      processors:
+      - add_kubernetes_metadata:
+          host: ${NODE_NAME}
+          matchers:
+          - logs_path:
+              logs_path: "/var/log/containers/"
+    
+    processors:
+    - add_host_metadata:
+        when.not.contains.tags: forwarded
+    - drop_fields:
+        fields: ["agent", "ecs", "input", "log"]
+    
+    output.logstash:
+      hosts: ["logstash:5044", "logstash:5045", "logstash:5046"]
+      loadbalance: true
+      
+    logging.level: info
+    logging.to_files: true
+    logging.files:
+      path: /var/log/filebeat
+      name: filebeat
+      keepfiles: 7
+      permissions: 0644
+
+---
+# Filebeat DaemonSet
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: filebeat
+  namespace: zoptal-production
+  labels:
+    app.kubernetes.io/name: filebeat
+    app.kubernetes.io/component: shipper
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: filebeat
+      app.kubernetes.io/component: shipper
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: filebeat
+        app.kubernetes.io/component: shipper
+    spec:
+      serviceAccountName: filebeat
+      terminationGracePeriodSeconds: 30
+      hostNetwork: true
+      dnsPolicy: ClusterFirstWithHostNet
+      containers:
+      - name: filebeat
+        image: docker.elastic.co/beats/filebeat:8.11.0
+        args: [
+          "-c", "/etc/filebeat.yml",
+          "-e",
+        ]
+        env:
+        - name: NODE_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: spec.nodeName
+        securityContext:
+          runAsUser: 0
+          capabilities:
+            add:
+            - SYS_ADMIN
+        resources:
+          limits:
+            memory: 200Mi
+            cpu: 100m
+          requests:
+            cpu: 100m
+            memory: 100Mi
+        volumeMounts:
+        - name: config
+          mountPath: /etc/filebeat.yml
+          readOnly: true
+          subPath: filebeat.yml
+        - name: data
+          mountPath: /usr/share/filebeat/data
+        - name: varlibdockercontainers
+          mountPath: /var/lib/docker/containers
+          readOnly: true
+        - name: varlog
+          mountPath: /var/log
+          readOnly: true
+      volumes:
+      - name: config
+        configMap:
+          defaultMode: 0600
+          name: filebeat-config
+      - name: varlibdockercontainers
+        hostPath:
+          path: /var/lib/docker/containers
+      - name: varlog
+        hostPath:
+          path: /var/log
+      - name: data
+        hostPath:
+          path: /var/lib/filebeat-data
+          type: DirectoryOrCreate
+
+---
+# ServiceAccounts
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: elasticsearch
+  namespace: zoptal-production
+  labels:
+    app.kubernetes.io/name: elasticsearch
+
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: logstash
+  namespace: zoptal-production
+  labels:
+    app.kubernetes.io/name: logstash
+
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: kibana
+  namespace: zoptal-production
+  labels:
+    app.kubernetes.io/name: kibana
+
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: filebeat
+  namespace: zoptal-production
+  labels:
+    app.kubernetes.io/name: filebeat
+
+---
+# ClusterRole for Filebeat
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: filebeat
+  labels:
+    app.kubernetes.io/name: filebeat
+rules:
+- apiGroups: [""]
+  resources:
+  - nodes
+  - namespaces
+  - events
+  - pods
+  verbs: ["get", "list", "watch"]
+
+---
+# ClusterRoleBinding for Filebeat
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: filebeat
+  labels:
+    app.kubernetes.io/name: filebeat
+subjects:
+- kind: ServiceAccount
+  name: filebeat
+  namespace: zoptal-production
+roleRef:
+  kind: ClusterRole
+  name: filebeat
+  apiGroup: rbac.authorization.k8s.io
+
+---
+# Elasticsearch Index Lifecycle Policy
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: elasticsearch-ilm-policy
+  namespace: zoptal-production
+  labels:
+    app.kubernetes.io/name: elasticsearch
+    app.kubernetes.io/component: ilm-policy
+data:
+  setup-ilm.sh: |
+    #!/bin/bash
+    
+    # Wait for Elasticsearch to be ready
+    until curl -s "http://elasticsearch-master:9200/_cluster/health?wait_for_status=yellow&timeout=50s"; do
+      echo "Waiting for Elasticsearch..."
+      sleep 30
+    done
+    
+    # Create ILM policy
+    curl -X PUT "http://elasticsearch-master:9200/_ilm/policy/zoptal-logs-policy" \
+      -H "Content-Type: application/json" \
+      -d '{
+        "policy": {
+          "phases": {
+            "hot": {
+              "actions": {
+                "rollover": {
+                  "max_size": "5GB",
+                  "max_age": "1d",
+                  "max_docs": 1000000
+                }
+              }
+            },
+            "warm": {
+              "min_age": "2d",
+              "actions": {
+                "allocate": {
+                  "number_of_replicas": 0
+                }
+              }
+            },
+            "cold": {
+              "min_age": "7d",
+              "actions": {
+                "allocate": {
+                  "number_of_replicas": 0
+                }
+              }
+            },
+            "delete": {
+              "min_age": "30d",
+              "actions": {
+                "delete": {}
+              }
+            }
+          }
+        }
+      }'
+    
+    # Create index templates for each log type
+    curl -X PUT "http://elasticsearch-master:9200/_index_template/zoptal-application-logs" \
+      -H "Content-Type: application/json" \
+      -d '{
+        "index_patterns": ["zoptal-application-logs-*"],
+        "template": {
+          "settings": {
+            "number_of_shards": 2,
+            "number_of_replicas": 1,
+            "index.lifecycle.name": "zoptal-logs-policy",
+            "index.lifecycle.rollover_alias": "zoptal-application-logs"
+          }
+        }
+      }'
+
+---
+# ILM Setup Job
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: elasticsearch-ilm-setup
+  namespace: zoptal-production
+  labels:
+    app.kubernetes.io/name: elasticsearch
+    app.kubernetes.io/component: ilm-setup
+spec:
+  template:
+    spec:
+      restartPolicy: OnFailure
+      containers:
+      - name: setup-ilm
+        image: curlimages/curl:8.4.0
+        command: ["/bin/sh"]
+        args: ["/scripts/setup-ilm.sh"]
+        volumeMounts:
+        - name: setup-script
+          mountPath: /scripts
+      volumes:
+      - name: setup-script
+        configMap:
+          name: elasticsearch-ilm-policy
+          defaultMode: 0755

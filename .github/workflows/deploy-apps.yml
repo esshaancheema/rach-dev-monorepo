@@ -1,0 +1,307 @@
+name: Deploy Apps
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'apps/**'
+      - 'packages/**'
+      - '.github/workflows/deploy-apps.yml'
+  pull_request:
+    types: [opened, synchronize, reopened]
+    paths:
+      - 'apps/**'
+      - 'packages/**'
+  workflow_dispatch:
+    inputs:
+      app:
+        description: 'App to deploy (leave empty for all)'
+        required: false
+        type: choice
+        options:
+          - ''
+          - web-main
+          - admin
+          - developer-portal
+
+env:
+  VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+  VERCEL_PROJECT_ID_WEB: ${{ secrets.VERCEL_PROJECT_ID_WEB }}
+  VERCEL_PROJECT_ID_ADMIN: ${{ secrets.VERCEL_PROJECT_ID_ADMIN }}
+  VERCEL_PROJECT_ID_DEVELOPER: ${{ secrets.VERCEL_PROJECT_ID_DEVELOPER }}
+
+jobs:
+  detect-changes:
+    name: Detect Changed Apps
+    runs-on: ubuntu-latest
+    outputs:
+      apps: ${{ steps.changes.outputs.apps }}
+      is-pr: ${{ steps.pr-check.outputs.is-pr }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Check if PR
+        id: pr-check
+        run: |
+          if [[ "${{ github.event_name }}" == "pull_request" ]]; then
+            echo "is-pr=true" >> $GITHUB_OUTPUT
+          else
+            echo "is-pr=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Detect changes
+        id: changes
+        run: |
+          if [ "${{ github.event_name }}" == "workflow_dispatch" ] && [ "${{ github.event.inputs.app }}" != "" ]; then
+            echo "apps=[\"${{ github.event.inputs.app }}\"]" >> $GITHUB_OUTPUT
+          else
+            # Get changed files
+            if [ "${{ github.event_name }}" == "pull_request" ]; then
+              CHANGED_FILES=$(git diff --name-only origin/${{ github.base_ref }}...HEAD)
+            else
+              CHANGED_FILES=$(git diff --name-only ${{ github.event.before }} ${{ github.sha }})
+            fi
+            
+            # Check which apps are affected
+            APPS=()
+            
+            # Check if packages changed (affects all apps)
+            if echo "$CHANGED_FILES" | grep -q '^packages/'; then
+              APPS=("web-main" "admin" "developer-portal")
+            else
+              # Check individual apps
+              for app in web-main admin developer-portal; do
+                if echo "$CHANGED_FILES" | grep -q "^apps/$app/"; then
+                  APPS+=("$app")
+                fi
+              done
+            fi
+            
+            # Convert to JSON array
+            if [ ${#APPS[@]} -eq 0 ]; then
+              echo "apps=[]" >> $GITHUB_OUTPUT
+            else
+              JSON_APPS=$(printf '%s\n' "${APPS[@]}" | jq -R . | jq -s -c .)
+              echo "apps=$JSON_APPS" >> $GITHUB_OUTPUT
+            fi
+          fi
+
+  deploy-preview:
+    name: Deploy Preview - ${{ matrix.app }}
+    needs: detect-changes
+    if: needs.detect-changes.outputs.is-pr == 'true' && needs.detect-changes.outputs.apps != '[]'
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        app: ${{ fromJson(needs.detect-changes.outputs.apps) }}
+    env:
+      VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+
+      - name: Install Vercel CLI
+        run: npm install -g vercel@latest
+
+      - name: Pull Vercel Environment
+        run: |
+          cd apps/${{ matrix.app }}
+          PROJECT_ID_VAR="VERCEL_PROJECT_ID_$(echo ${{ matrix.app }} | tr '[:lower:]' '[:upper:]' | tr '-' '_')"
+          PROJECT_ID="${!PROJECT_ID_VAR}"
+          vercel pull --yes --environment=preview --token=${{ env.VERCEL_TOKEN }} --scope=${{ env.VERCEL_ORG_ID }}
+
+      - name: Build Project
+        run: |
+          cd apps/${{ matrix.app }}
+          vercel build --token=${{ env.VERCEL_TOKEN }}
+
+      - name: Deploy Preview
+        id: deploy
+        run: |
+          cd apps/${{ matrix.app }}
+          DEPLOYMENT_URL=$(vercel deploy --prebuilt --token=${{ env.VERCEL_TOKEN }} --scope=${{ env.VERCEL_ORG_ID }})
+          echo "deployment-url=$DEPLOYMENT_URL" >> $GITHUB_OUTPUT
+
+      - name: Comment on PR
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const appName = '${{ matrix.app }}';
+            const deploymentUrl = '${{ steps.deploy.outputs.deployment-url }}';
+            const comment = `### Preview Deployment for ${appName}
+            
+            ✅ Successfully deployed to: ${deploymentUrl}
+            
+            | App | Preview URL | Status |
+            |-----|-------------|--------|
+            | ${appName} | [Visit Preview](${deploymentUrl}) | 🟢 Ready |
+            
+            This preview will be automatically deleted when the PR is merged or closed.`;
+            
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: comment
+            });
+
+  deploy-production:
+    name: Deploy Production - ${{ matrix.app }}
+    needs: detect-changes
+    if: github.ref == 'refs/heads/main' && needs.detect-changes.outputs.apps != '[]'
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        app: ${{ fromJson(needs.detect-changes.outputs.apps) }}
+    environment:
+      name: production-${{ matrix.app }}
+      url: ${{ steps.deploy.outputs.deployment-url }}
+    env:
+      VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run tests for app
+        run: npm run test --workspace=apps/${{ matrix.app }}
+
+      - name: Install Vercel CLI
+        run: npm install -g vercel@latest
+
+      - name: Pull Vercel Environment
+        run: |
+          cd apps/${{ matrix.app }}
+          PROJECT_ID_VAR="VERCEL_PROJECT_ID_$(echo ${{ matrix.app }} | tr '[:lower:]' '[:upper:]' | tr '-' '_')"
+          PROJECT_ID="${!PROJECT_ID_VAR}"
+          vercel pull --yes --environment=production --token=${{ env.VERCEL_TOKEN }} --scope=${{ env.VERCEL_ORG_ID }}
+
+      - name: Build Project
+        run: |
+          cd apps/${{ matrix.app }}
+          vercel build --prod --token=${{ env.VERCEL_TOKEN }}
+        env:
+          NEXT_PUBLIC_API_URL: ${{ secrets.PRODUCTION_API_URL }}
+          NEXT_PUBLIC_APP_URL: ${{ secrets.PRODUCTION_APP_URL }}
+
+      - name: Deploy to Production
+        id: deploy
+        run: |
+          cd apps/${{ matrix.app }}
+          DEPLOYMENT_URL=$(vercel deploy --prebuilt --prod --token=${{ env.VERCEL_TOKEN }} --scope=${{ env.VERCEL_ORG_ID }})
+          echo "deployment-url=$DEPLOYMENT_URL" >> $GITHUB_OUTPUT
+
+      - name: Create deployment record
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const deployment = await github.rest.repos.createDeployment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              ref: context.sha,
+              environment: 'production-${{ matrix.app }}',
+              description: 'Production deployment of ${{ matrix.app }}',
+              production_environment: true,
+              required_contexts: []
+            });
+            
+            await github.rest.repos.createDeploymentStatus({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              deployment_id: deployment.data.id,
+              state: 'success',
+              environment_url: '${{ steps.deploy.outputs.deployment-url }}',
+              description: 'Deployment successful'
+            });
+
+      - name: Purge CDN Cache
+        run: |
+          # Purge Cloudflare cache if using Cloudflare
+          if [ "${{ matrix.app }}" == "web-main" ]; then
+            curl -X POST "https://api.cloudflare.com/client/v4/zones/${{ secrets.CLOUDFLARE_ZONE_ID }}/purge_cache" \
+              -H "Authorization: Bearer ${{ secrets.CLOUDFLARE_API_TOKEN }}" \
+              -H "Content-Type: application/json" \
+              --data '{"purge_everything":true}'
+          fi
+
+      - name: Run E2E tests
+        run: |
+          cd apps/${{ matrix.app }}
+          npm run test:e2e:production
+        env:
+          DEPLOYMENT_URL: ${{ steps.deploy.outputs.deployment-url }}
+        continue-on-error: true
+
+      - name: Notify deployment
+        uses: 8398a7/action-slack@v3
+        if: always()
+        with:
+          status: ${{ job.status }}
+          text: |
+            ${{ matrix.app }} deployed to production
+            URL: ${{ steps.deploy.outputs.deployment-url }}
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK }}
+
+  lighthouse:
+    name: Lighthouse Check - ${{ matrix.app }}
+    needs: [detect-changes, deploy-production]
+    if: github.ref == 'refs/heads/main' && needs.detect-changes.outputs.apps != '[]'
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        app: ${{ fromJson(needs.detect-changes.outputs.apps) }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Run Lighthouse
+        uses: treosh/lighthouse-ci-action@v11
+        with:
+          urls: |
+            https://${{ matrix.app }}.zoptal.com
+          uploadArtifacts: true
+          temporaryPublicStorage: true
+          runs: 3
+
+      - name: Comment results
+        uses: actions/github-script@v7
+        if: github.event_name == 'pull_request'
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const results = require('./lighthouse-results.json');
+            const comment = `### Lighthouse Results for ${{ matrix.app }}
+            
+            | Metric | Score |
+            |--------|-------|
+            | Performance | ${results.performance} |
+            | Accessibility | ${results.accessibility} |
+            | Best Practices | ${results['best-practices']} |
+            | SEO | ${results.seo} |`;
+            
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: comment
+            });

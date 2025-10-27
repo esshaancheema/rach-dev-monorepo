@@ -1,0 +1,98 @@
+version: '3.8'
+
+services:
+  ab-testing-service:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: production
+    container_name: zoptal-ab-testing-service
+    ports:
+      - "3004:3004"
+    environment:
+      - NODE_ENV=production
+      - PORT=3004
+      - REDIS_URL=redis://redis:6379
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - REDIS_DB=2
+      - JWT_SECRET=your-super-secret-jwt-key-here
+      - LOG_LEVEL=info
+      - CORS_ORIGINS=http://localhost:3000,https://app.zoptal.com
+      - RATE_LIMIT_WINDOW_MS=900000
+      - RATE_LIMIT_MAX=100
+      - FEATURE_FLAGS_MAX_FLAGS=1000
+      - FEATURE_FLAGS_CACHE_TTL=3600
+      - EXPERIMENTS_MAX_EXPERIMENTS=500
+      - METRICS_RETENTION_DAYS=90
+    volumes:
+      - ./logs:/app/logs
+    networks:
+      - zoptal-network
+    depends_on:
+      - redis
+    restart: unless-stopped
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.ab-testing.rule=Host(`ab-testing.zoptal.com`)"
+      - "traefik.http.routers.ab-testing.tls=true"
+      - "traefik.http.routers.ab-testing.tls.certresolver=letsencrypt"
+      - "traefik.http.services.ab-testing.loadbalancer.server.port=3004"
+
+  redis:
+    image: redis:7-alpine
+    container_name: zoptal-ab-testing-redis
+    ports:
+      - "6382:6379"
+    volumes:
+      - redis_data:/data
+      - ./redis.conf:/usr/local/etc/redis/redis.conf
+    command: redis-server /usr/local/etc/redis/redis.conf
+    networks:
+      - zoptal-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+  # Development services
+  ab-testing-dev:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: builder
+    container_name: zoptal-ab-testing-dev
+    ports:
+      - "3004:3004"
+      - "9229:9229" # Debug port
+    environment:
+      - NODE_ENV=development
+      - PORT=3004
+      - REDIS_URL=redis://redis:6379
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - REDIS_DB=2
+      - JWT_SECRET=dev-jwt-secret-key
+      - LOG_LEVEL=debug
+      - CORS_ORIGINS=http://localhost:3000,http://localhost:3001
+    volumes:
+      - .:/app
+      - /app/node_modules
+    networks:
+      - zoptal-network
+    depends_on:
+      - redis
+    command: npm run dev
+    profiles:
+      - dev
+
+volumes:
+  redis_data:
+    driver: local
+
+networks:
+  zoptal-network:
+    external: true

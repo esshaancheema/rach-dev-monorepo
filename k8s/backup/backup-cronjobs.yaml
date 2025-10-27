@@ -1,0 +1,481 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: backup
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: backup-service-account
+  namespace: backup
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: backup-cluster-role
+rules:
+- apiGroups: [""]
+  resources: ["pods", "pods/exec", "services", "configmaps", "secrets", "persistentvolumeclaims"]
+  verbs: ["get", "list", "watch"]
+- apiGroups: ["apps"]
+  resources: ["deployments", "statefulsets", "daemonsets", "replicasets"]
+  verbs: ["get", "list", "watch"]
+- apiGroups: ["batch"]
+  resources: ["jobs", "cronjobs"]
+  verbs: ["get", "list", "watch", "create", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: backup-cluster-role-binding
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: backup-cluster-role
+subjects:
+- kind: ServiceAccount
+  name: backup-service-account
+  namespace: backup
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: backup-scripts
+  namespace: backup
+data:
+  backup-postgres.sh: |
+    #!/bin/bash
+    set -euo pipefail
+    
+    # PostgreSQL backup script
+    DB_HOST="${DB_HOST:-postgres-service.default.svc.cluster.local}"
+    DB_PORT="${DB_PORT:-5432}"
+    DB_NAME="${DB_NAME:-zoptal}"
+    DB_USER="${DB_USER:-postgres}"
+    DATE=$(date +%Y%m%d_%H%M%S)
+    BACKUP_FILE="postgres_${DB_NAME}_${DATE}.dump"
+    
+    echo "Starting PostgreSQL backup..."
+    
+    # Perform backup
+    PGPASSWORD=${DB_PASSWORD} pg_dump \
+      -h ${DB_HOST} \
+      -p ${DB_PORT} \
+      -U ${DB_USER} \
+      -d ${DB_NAME} \
+      --format=custom \
+      --compress=9 \
+      --file=/tmp/${BACKUP_FILE}
+    
+    # Encrypt backup
+    openssl enc -aes-256-cbc -salt -pbkdf2 \
+      -in /tmp/${BACKUP_FILE} \
+      -out /tmp/${BACKUP_FILE}.enc \
+      -k "${ENCRYPTION_KEY}"
+    
+    # Upload to S3
+    aws s3 cp /tmp/${BACKUP_FILE}.enc \
+      s3://${S3_BUCKET}/postgres/${BACKUP_FILE}.enc \
+      --storage-class STANDARD_IA
+    
+    # Cleanup
+    rm -f /tmp/${BACKUP_FILE} /tmp/${BACKUP_FILE}.enc
+    
+    echo "PostgreSQL backup completed"
+
+  backup-redis.sh: |
+    #!/bin/bash
+    set -euo pipefail
+    
+    # Redis backup script
+    REDIS_HOST="${REDIS_HOST:-redis-service.default.svc.cluster.local}"
+    REDIS_PORT="${REDIS_PORT:-6379}"
+    DATE=$(date +%Y%m%d_%H%M%S)
+    BACKUP_FILE="redis_${DATE}.rdb"
+    
+    echo "Starting Redis backup..."
+    
+    # Trigger backup
+    redis-cli -h ${REDIS_HOST} -p ${REDIS_PORT} BGSAVE
+    
+    # Wait for backup to complete
+    sleep 5
+    while [ $(redis-cli -h ${REDIS_HOST} -p ${REDIS_PORT} INFO persistence | grep rdb_bgsave_in_progress:1 | wc -l) -gt 0 ]; do
+      sleep 1
+    done
+    
+    # Copy backup file
+    kubectl cp redis-0:/data/dump.rdb /tmp/${BACKUP_FILE} -n default
+    
+    # Compress and encrypt
+    gzip /tmp/${BACKUP_FILE}
+    openssl enc -aes-256-cbc -salt -pbkdf2 \
+      -in /tmp/${BACKUP_FILE}.gz \
+      -out /tmp/${BACKUP_FILE}.gz.enc \
+      -k "${ENCRYPTION_KEY}"
+    
+    # Upload to S3
+    aws s3 cp /tmp/${BACKUP_FILE}.gz.enc \
+      s3://${S3_BUCKET}/redis/${BACKUP_FILE}.gz.enc
+    
+    # Cleanup
+    rm -f /tmp/${BACKUP_FILE}*
+    
+    echo "Redis backup completed"
+
+  backup-configs.sh: |
+    #!/bin/bash
+    set -euo pipefail
+    
+    # Kubernetes configuration backup
+    DATE=$(date +%Y%m%d_%H%M%S)
+    BACKUP_DIR="/tmp/k8s-backup-${DATE}"
+    
+    echo "Starting Kubernetes configuration backup..."
+    
+    mkdir -p ${BACKUP_DIR}
+    
+    # Backup all resources
+    kubectl get all --all-namespaces -o yaml > ${BACKUP_DIR}/all-resources.yaml
+    kubectl get configmaps --all-namespaces -o yaml > ${BACKUP_DIR}/configmaps.yaml
+    kubectl get secrets --all-namespaces -o yaml > ${BACKUP_DIR}/secrets.yaml
+    kubectl get pv,pvc --all-namespaces -o yaml > ${BACKUP_DIR}/storage.yaml
+    kubectl get ingress --all-namespaces -o yaml > ${BACKUP_DIR}/ingress.yaml
+    
+    # Create archive
+    tar -czf /tmp/k8s-configs-${DATE}.tar.gz -C ${BACKUP_DIR} .
+    
+    # Encrypt
+    openssl enc -aes-256-cbc -salt -pbkdf2 \
+      -in /tmp/k8s-configs-${DATE}.tar.gz \
+      -out /tmp/k8s-configs-${DATE}.tar.gz.enc \
+      -k "${ENCRYPTION_KEY}"
+    
+    # Upload to S3
+    aws s3 cp /tmp/k8s-configs-${DATE}.tar.gz.enc \
+      s3://${S3_BUCKET}/configs/k8s-configs-${DATE}.tar.gz.enc
+    
+    # Cleanup
+    rm -rf ${BACKUP_DIR} /tmp/k8s-configs-${DATE}*
+    
+    echo "Kubernetes configuration backup completed"
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: backup-credentials
+  namespace: backup
+type: Opaque
+stringData:
+  DB_PASSWORD: "your-db-password"
+  ENCRYPTION_KEY: "your-encryption-key"
+  AWS_ACCESS_KEY_ID: "your-aws-access-key"
+  AWS_SECRET_ACCESS_KEY: "your-aws-secret-key"
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: postgres-backup
+  namespace: backup
+spec:
+  schedule: "0 2 * * *"  # Daily at 2 AM UTC
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 3
+      template:
+        metadata:
+          labels:
+            app: postgres-backup
+        spec:
+          serviceAccountName: backup-service-account
+          restartPolicy: OnFailure
+          containers:
+          - name: backup
+            image: postgres:15-alpine
+            command: ["/bin/bash", "-c"]
+            args:
+            - |
+              # Install required tools
+              apk add --no-cache aws-cli openssl
+              
+              # Copy and execute backup script
+              cp /scripts/backup-postgres.sh /tmp/
+              chmod +x /tmp/backup-postgres.sh
+              /tmp/backup-postgres.sh
+            env:
+            - name: DB_HOST
+              value: "postgres-service.default.svc.cluster.local"
+            - name: DB_PORT
+              value: "5432"
+            - name: DB_NAME
+              value: "zoptal"
+            - name: DB_USER
+              value: "postgres"
+            - name: DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: backup-credentials
+                  key: DB_PASSWORD
+            - name: S3_BUCKET
+              value: "zoptal-backups"
+            - name: AWS_REGION
+              value: "us-east-1"
+            - name: ENCRYPTION_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: backup-credentials
+                  key: ENCRYPTION_KEY
+            - name: AWS_ACCESS_KEY_ID
+              valueFrom:
+                secretKeyRef:
+                  name: backup-credentials
+                  key: AWS_ACCESS_KEY_ID
+            - name: AWS_SECRET_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: backup-credentials
+                  key: AWS_SECRET_ACCESS_KEY
+            volumeMounts:
+            - name: backup-scripts
+              mountPath: /scripts
+            resources:
+              requests:
+                memory: "256Mi"
+                cpu: "100m"
+              limits:
+                memory: "1Gi"
+                cpu: "500m"
+          volumes:
+          - name: backup-scripts
+            configMap:
+              name: backup-scripts
+              defaultMode: 0755
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: redis-backup
+  namespace: backup
+spec:
+  schedule: "0 */6 * * *"  # Every 6 hours
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 3
+      template:
+        metadata:
+          labels:
+            app: redis-backup
+        spec:
+          serviceAccountName: backup-service-account
+          restartPolicy: OnFailure
+          containers:
+          - name: backup
+            image: redis:7-alpine
+            command: ["/bin/sh", "-c"]
+            args:
+            - |
+              # Install required tools
+              apk add --no-cache aws-cli openssl bash kubectl
+              
+              # Copy and execute backup script
+              cp /scripts/backup-redis.sh /tmp/
+              chmod +x /tmp/backup-redis.sh
+              /tmp/backup-redis.sh
+            env:
+            - name: REDIS_HOST
+              value: "redis-service.default.svc.cluster.local"
+            - name: REDIS_PORT
+              value: "6379"
+            - name: S3_BUCKET
+              value: "zoptal-backups"
+            - name: AWS_REGION
+              value: "us-east-1"
+            - name: ENCRYPTION_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: backup-credentials
+                  key: ENCRYPTION_KEY
+            - name: AWS_ACCESS_KEY_ID
+              valueFrom:
+                secretKeyRef:
+                  name: backup-credentials
+                  key: AWS_ACCESS_KEY_ID
+            - name: AWS_SECRET_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: backup-credentials
+                  key: AWS_SECRET_ACCESS_KEY
+            volumeMounts:
+            - name: backup-scripts
+              mountPath: /scripts
+            resources:
+              requests:
+                memory: "128Mi"
+                cpu: "100m"
+              limits:
+                memory: "512Mi"
+                cpu: "500m"
+          volumes:
+          - name: backup-scripts
+            configMap:
+              name: backup-scripts
+              defaultMode: 0755
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: config-backup
+  namespace: backup
+spec:
+  schedule: "0 1 * * *"  # Daily at 1 AM UTC
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 3
+      template:
+        metadata:
+          labels:
+            app: config-backup
+        spec:
+          serviceAccountName: backup-service-account
+          restartPolicy: OnFailure
+          containers:
+          - name: backup
+            image: bitnami/kubectl:latest
+            command: ["/bin/bash", "-c"]
+            args:
+            - |
+              # Install required tools
+              apt-get update && apt-get install -y awscli openssl
+              
+              # Copy and execute backup script
+              cp /scripts/backup-configs.sh /tmp/
+              chmod +x /tmp/backup-configs.sh
+              /tmp/backup-configs.sh
+            env:
+            - name: S3_BUCKET
+              value: "zoptal-backups"
+            - name: AWS_REGION
+              value: "us-east-1"
+            - name: ENCRYPTION_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: backup-credentials
+                  key: ENCRYPTION_KEY
+            - name: AWS_ACCESS_KEY_ID
+              valueFrom:
+                secretKeyRef:
+                  name: backup-credentials
+                  key: AWS_ACCESS_KEY_ID
+            - name: AWS_SECRET_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: backup-credentials
+                  key: AWS_SECRET_ACCESS_KEY
+            volumeMounts:
+            - name: backup-scripts
+              mountPath: /scripts
+            resources:
+              requests:
+                memory: "256Mi"
+                cpu: "100m"
+              limits:
+                memory: "512Mi"
+                cpu: "500m"
+          volumes:
+          - name: backup-scripts
+            configMap:
+              name: backup-scripts
+              defaultMode: 0755
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: backup-validation
+  namespace: backup
+spec:
+  schedule: "0 4 * * *"  # Daily at 4 AM UTC
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 3
+      template:
+        metadata:
+          labels:
+            app: backup-validation
+        spec:
+          serviceAccountName: backup-service-account
+          restartPolicy: OnFailure
+          containers:
+          - name: validate
+            image: alpine:latest
+            command: ["/bin/sh", "-c"]
+            args:
+            - |
+              # Install required tools
+              apk add --no-cache aws-cli curl jq
+              
+              # Validate today's backups
+              DATE=$(date +%Y%m%d)
+              ERRORS=0
+              
+              # Check PostgreSQL backup
+              PG_BACKUP=$(aws s3 ls s3://${S3_BUCKET}/postgres/ | grep ${DATE} | wc -l)
+              if [ $PG_BACKUP -eq 0 ]; then
+                echo "ERROR: No PostgreSQL backup found for ${DATE}"
+                ERRORS=$((ERRORS + 1))
+              fi
+              
+              # Check Redis backup
+              REDIS_BACKUP=$(aws s3 ls s3://${S3_BUCKET}/redis/ | grep ${DATE} | wc -l)
+              if [ $REDIS_BACKUP -eq 0 ]; then
+                echo "ERROR: No Redis backup found for ${DATE}"
+                ERRORS=$((ERRORS + 1))
+              fi
+              
+              # Check config backup
+              CONFIG_BACKUP=$(aws s3 ls s3://${S3_BUCKET}/configs/ | grep ${DATE} | wc -l)
+              if [ $CONFIG_BACKUP -eq 0 ]; then
+                echo "ERROR: No config backup found for ${DATE}"
+                ERRORS=$((ERRORS + 1))
+              fi
+              
+              # Send alert if errors
+              if [ $ERRORS -gt 0 ]; then
+                echo "Backup validation failed with ${ERRORS} errors"
+                exit 1
+              else
+                echo "All backups validated successfully"
+              fi
+            env:
+            - name: S3_BUCKET
+              value: "zoptal-backups"
+            - name: AWS_REGION
+              value: "us-east-1"
+            - name: AWS_ACCESS_KEY_ID
+              valueFrom:
+                secretKeyRef:
+                  name: backup-credentials
+                  key: AWS_ACCESS_KEY_ID
+            - name: AWS_SECRET_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: backup-credentials
+                  key: AWS_SECRET_ACCESS_KEY
+            resources:
+              requests:
+                memory: "128Mi"
+                cpu: "100m"
+              limits:
+                memory: "256Mi"
+                cpu: "200m"

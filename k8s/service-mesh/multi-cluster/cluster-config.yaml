@@ -1,0 +1,383 @@
+# Multi-Cluster Service Mesh Configuration
+
+# Primary cluster configuration
+apiVersion: install.istio.io/v1alpha1
+kind: IstioOperator
+metadata:
+  name: primary-cluster
+  namespace: istio-system
+spec:
+  values:
+    global:
+      meshID: zoptal-mesh
+      multiCluster:
+        clusterName: zoptal-primary
+      network: zoptal-network-1
+    pilot:
+      env:
+        PILOT_ENABLE_CROSS_CLUSTER_WORKLOAD_ENTRY: true
+        EXTERNAL_ISTIOD: false
+    istiodRemote:
+      enabled: false
+
+---
+# Secondary cluster configuration
+apiVersion: install.istio.io/v1alpha1
+kind: IstioOperator
+metadata:
+  name: secondary-cluster
+  namespace: istio-system
+spec:
+  values:
+    global:
+      meshID: zoptal-mesh
+      multiCluster:
+        clusterName: zoptal-secondary
+      network: zoptal-network-2
+      remotePilotAddress: ${DISCOVERY_ADDRESS}
+    pilot:
+      env:
+        EXTERNAL_ISTIOD: true
+    istiodRemote:
+      enabled: true
+
+---
+# Cross-cluster service discovery
+apiVersion: networking.istio.io/v1alpha3
+kind: Gateway
+metadata:
+  name: cross-network-gateway
+  namespace: istio-system
+spec:
+  selector:
+    istio: eastwestgateway
+    app: istio-eastwestgateway
+  servers:
+  - port:
+      number: 15443
+      name: tls
+      protocol: TLS
+    tls:
+      mode: ISTIO_MUTUAL
+    hosts:
+    - "*.local"
+
+---
+# East-west gateway for cross-cluster communication
+apiVersion: v1
+kind: Service
+metadata:
+  name: istio-eastwestgateway
+  namespace: istio-system
+  labels:
+    istio: eastwestgateway
+    app: istio-eastwestgateway
+spec:
+  type: LoadBalancer
+  selector:
+    istio: eastwestgateway
+    app: istio-eastwestgateway
+  ports:
+  - port: 15021
+    targetPort: 15021
+    name: status-port
+  - port: 15443
+    targetPort: 15443
+    name: tls
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: istio-eastwestgateway
+  namespace: istio-system
+  labels:
+    istio: eastwestgateway
+    app: istio-eastwestgateway
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      istio: eastwestgateway
+      app: istio-eastwestgateway
+  template:
+    metadata:
+      labels:
+        istio: eastwestgateway
+        app: istio-eastwestgateway
+      annotations:
+        sidecar.istio.io/inject: "false"
+    spec:
+      serviceAccountName: istio-eastwestgateway-service-account
+      containers:
+      - name: istio-proxy
+        image: auto
+        ports:
+        - containerPort: 15021
+        - containerPort: 15443
+        env:
+        - name: ISTIO_META_ROUTER_MODE
+          value: sni-dnat
+        - name: ISTIO_META_REQUESTED_NETWORK_VIEW
+          value: zoptal-network-1,zoptal-network-2
+        resources:
+          requests:
+            cpu: 100m
+            memory: 128Mi
+          limits:
+            cpu: 500m
+            memory: 512Mi
+
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: istio-eastwestgateway-service-account
+  namespace: istio-system
+  labels:
+    istio: eastwestgateway
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: istio-eastwestgateway-sds
+  namespace: istio-system
+rules:
+- apiGroups: [""]
+  resources: ["secrets"]
+  verbs: ["get", "watch", "list"]
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: istio-eastwestgateway-sds
+  namespace: istio-system
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: istio-eastwestgateway-sds
+subjects:
+- kind: ServiceAccount
+  name: istio-eastwestgateway-service-account
+
+---
+# Expose control plane for cross-cluster access
+apiVersion: networking.istio.io/v1beta1
+kind: VirtualService
+metadata:
+  name: istiod-vs
+  namespace: istio-system
+spec:
+  hosts:
+  - istiod.istio-system.svc.cluster.local
+  gateways:
+  - cross-network-gateway
+  tls:
+  - match:
+    - port: 15443
+      sniHosts:
+      - istiod.istio-system.svc.cluster.local
+    route:
+    - destination:
+        host: istiod.istio-system.svc.cluster.local
+        port:
+          number: 15010
+
+---
+# Cross-cluster endpoint discovery
+apiVersion: networking.istio.io/v1alpha3
+kind: DestinationRule
+metadata:
+  name: cross-cluster-endpoints
+  namespace: istio-system
+spec:
+  host: "*.local"
+  trafficPolicy:
+    tls:
+      mode: ISTIO_MUTUAL
+  exportTo:
+  - "*"
+
+---
+# Multi-cluster secret for service discovery
+apiVersion: v1
+kind: Secret
+metadata:
+  name: cacerts
+  namespace: istio-system
+type: Opaque
+data:
+  root-cert.pem: LS0tLS1CRUdJTiBDRVJUSUZJQ0FURS0tLS0t  # Base64 encoded root certificate
+  cert-chain.pem: LS0tLS1CRUdJTiBDRVJUSUZJQ0FURS0tLS0t  # Base64 encoded certificate chain
+  ca-cert.pem: LS0tLS1CRUdJTiBDRVJUSUZJQ0FURS0tLS0t    # Base64 encoded CA certificate
+  ca-key.pem: LS0tLS1CRUdJTiBQUklWQVRFIEtFWS0tLS0t   # Base64 encoded CA private key
+
+---
+# Network configuration for multi-cluster
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: istio-multi-cluster
+  namespace: istio-system
+  labels:
+    istio.io/config: true
+data:
+  mesh: |
+    defaultConfig:
+      proxyMetadata:
+        PILOT_ENABLE_CROSS_CLUSTER_WORKLOAD_ENTRY: true
+    trustDomain: cluster.local
+    accessLogFile: /dev/stdout
+    extensionProviders:
+    - name: jaeger
+      envoyOtelAls:
+        service: jaeger.istio-system.svc.cluster.local
+        port: 14250
+    defaultProviders:
+      tracing:
+      - jaeger
+  networks: |
+    networks:
+      zoptal-network-1:
+        endpoints:
+        - fromRegistry: zoptal-primary
+        gateways:
+        - registryServiceName: istio-eastwestgateway.istio-system
+          port: 15443
+      zoptal-network-2:
+        endpoints:
+        - fromRegistry: zoptal-secondary
+        gateways:
+        - registryServiceName: istio-eastwestgateway.istio-system
+          port: 15443
+
+---
+# Cross-cluster service entry for primary cluster services
+apiVersion: networking.istio.io/v1beta1
+kind: ServiceEntry
+metadata:
+  name: cross-cluster-services
+  namespace: zoptal-production
+spec:
+  hosts:
+  - auth-service.zoptal-production.global
+  - project-service.zoptal-production.global
+  - ai-service.zoptal-production.global
+  - notification-service.zoptal-production.global
+  - billing-service.zoptal-production.global
+  location: MESH_EXTERNAL
+  ports:
+  - number: 3001
+    name: http-auth
+    protocol: HTTP
+  - number: 3002
+    name: http-project
+    protocol: HTTP
+  - number: 3003
+    name: http-ai
+    protocol: HTTP
+  - number: 3004
+    name: http-notification
+    protocol: HTTP
+  - number: 3005
+    name: http-billing
+    protocol: HTTP
+  resolution: DNS
+  addresses:
+  - 240.0.0.1  # Virtual IP for cross-cluster service discovery
+  - 240.0.0.2
+  - 240.0.0.3
+  - 240.0.0.4
+  - 240.0.0.5
+
+---
+# Cross-cluster destination rules
+apiVersion: networking.istio.io/v1beta1
+kind: DestinationRule
+metadata:
+  name: cross-cluster-services
+  namespace: zoptal-production
+spec:
+  host: "*.zoptal-production.global"
+  trafficPolicy:
+    tls:
+      mode: ISTIO_MUTUAL
+    connectionPool:
+      tcp:
+        maxConnections: 50
+      http:
+        http1MaxPendingRequests: 10
+        maxRequestsPerConnection: 5
+        maxRetries: 3
+    circuitBreaker:
+      consecutiveGatewayErrors: 5
+      consecutive5xxErrors: 5
+      interval: 30s
+      baseEjectionTime: 30s
+      maxEjectionPercent: 50
+    outlierDetection:
+      consecutiveGatewayErrors: 5
+      consecutive5xxErrors: 5
+      interval: 30s
+      baseEjectionTime: 30s
+      maxEjectionPercent: 50
+
+---
+# Cross-cluster authorization policy
+apiVersion: security.istio.io/v1beta1
+kind: AuthorizationPolicy
+metadata:
+  name: cross-cluster-access
+  namespace: zoptal-production
+spec:
+  rules:
+  - from:
+    - source:
+        principals: ["cluster.local/ns/zoptal-production/sa/*"]
+  - from:
+    - source:
+        namespaces: ["zoptal-production"]
+    when:
+    - key: source.cluster
+      values: ["zoptal-primary", "zoptal-secondary"]
+
+---
+# Failover configuration for high availability
+apiVersion: networking.istio.io/v1beta1
+kind: DestinationRule
+metadata:
+  name: cross-cluster-failover
+  namespace: zoptal-production
+spec:
+  host: auth-service.zoptal-production.svc.cluster.local
+  trafficPolicy:
+    outlierDetection:
+      consecutiveGatewayErrors: 3
+      consecutive5xxErrors: 3
+      interval: 30s
+      baseEjectionTime: 30s
+      maxEjectionPercent: 50
+    connectionPool:
+      tcp:
+        maxConnections: 100
+      http:
+        http1MaxPendingRequests: 10
+        maxRequestsPerConnection: 10
+        maxRetries: 3
+    loadBalancer:
+      localityLbSetting:
+        enabled: true
+        distribute:
+        - from: region1/zone1/*
+          to:
+            "region1/zone1/*": 80
+            "region1/zone2/*": 20
+        - from: region1/zone2/*
+          to:
+            "region1/zone2/*": 80
+            "region1/zone1/*": 20
+        failover:
+        - from: region1
+          to: region2

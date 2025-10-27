@@ -1,0 +1,325 @@
+name: Security Tests
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main ]
+  schedule:
+    # Run security tests daily at 2 AM UTC
+    - cron: '0 2 * * *'
+
+env:
+  NODE_VERSION: '18'
+  POSTGRES_DB: zoptal_test
+  POSTGRES_USER: postgres
+  POSTGRES_PASSWORD: postgres
+  REDIS_URL: redis://localhost:6379
+
+jobs:
+  security-audit:
+    name: Security Audit
+    runs-on: ubuntu-latest
+    
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_DB: ${{ env.POSTGRES_DB }}
+          POSTGRES_USER: ${{ env.POSTGRES_USER }}
+          POSTGRES_PASSWORD: ${{ env.POSTGRES_PASSWORD }}
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
+          
+      redis:
+        image: redis:7
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 6379:6379
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: |
+          npm ci
+          cd services/auth-service && npm ci
+
+      - name: Setup environment
+        run: |
+          cp services/auth-service/.env.example services/auth-service/.env
+          # Update .env with test configuration
+          cat >> services/auth-service/.env << EOF
+          DATABASE_URL=postgresql://postgres:postgres@localhost:5432/zoptal_test
+          REDIS_URL=redis://localhost:6379
+          JWT_SECRET=test-jwt-secret-for-security-testing
+          NODE_ENV=test
+          API_URL=http://localhost:3000
+          EOF
+
+      - name: Setup database
+        run: |
+          cd services/auth-service
+          npx prisma migrate deploy
+          npx prisma generate
+
+      - name: Start auth service
+        run: |
+          cd services/auth-service
+          npm run build
+          npm start &
+          
+          # Wait for service to be ready
+          timeout 60 bash -c 'until curl -f http://localhost:3000/health; do sleep 2; done'
+        env:
+          NODE_ENV: test
+
+      - name: Run security audit
+        run: |
+          cd services/auth-service
+          npm run security:audit
+        continue-on-error: true
+
+      - name: Run penetration tests
+        run: |
+          cd services/auth-service
+          npm run security:pentest
+        continue-on-error: true
+
+      - name: Upload security reports
+        uses: actions/upload-artifact@v3
+        if: always()
+        with:
+          name: security-reports-${{ github.run_number }}
+          path: |
+            services/auth-service/security-audit-report.json
+            services/auth-service/penetration-test-report.json
+          retention-days: 30
+
+      - name: Comment on PR with security results
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v6
+        with:
+          script: |
+            const fs = require('fs');
+            
+            try {
+              const auditReport = JSON.parse(fs.readFileSync('services/auth-service/security-audit-report.json', 'utf8'));
+              const pentestReport = JSON.parse(fs.readFileSync('services/auth-service/penetration-test-report.json', 'utf8'));
+              
+              const auditSummary = auditReport.summary;
+              const pentestSummary = pentestReport.summary;
+              
+              const comment = `## 🔒 Security Test Results
+              
+              ### Security Audit
+              - **Total Tests**: ${auditSummary.total}
+              - **Passed**: ${auditSummary.passed}
+              - **Failed**: ${auditSummary.failed}
+              - **Pass Rate**: ${auditSummary.passRate}
+              - **Security Score**: ${auditSummary.securityScore}/100
+              - **Vulnerabilities**: ${auditSummary.vulnerabilities.length}
+              
+              ### Penetration Testing
+              - **Total Tests**: ${pentestSummary.totalTests}
+              - **Vulnerabilities Found**: ${pentestSummary.vulnerabilitiesFound}
+              - **Critical**: ${pentestSummary.criticalVulnerabilities}
+              - **High**: ${pentestSummary.highVulnerabilities}
+              - **Medium**: ${pentestSummary.mediumVulnerabilities}
+              - **Low**: ${pentestSummary.lowVulnerabilities}
+              - **Risk Score**: ${pentestReport.riskScore}/100
+              
+              ${pentestSummary.criticalVulnerabilities > 0 ? '⚠️ **Critical vulnerabilities found! Please review before merging.**' : ''}
+              ${pentestSummary.highVulnerabilities > 0 ? '⚠️ **High-severity vulnerabilities found.**' : ''}
+              
+              Full reports are available in the workflow artifacts.`;
+              
+              github.rest.issues.createComment({
+                issue_number: context.issue.number,
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                body: comment
+              });
+            } catch (error) {
+              console.log('Could not read security reports:', error.message);
+            }
+
+      - name: Fail if critical vulnerabilities found
+        run: |
+          if [ -f "services/auth-service/penetration-test-report.json" ]; then
+            CRITICAL_VULNS=$(cat services/auth-service/penetration-test-report.json | jq '.summary.criticalVulnerabilities')
+            if [ "$CRITICAL_VULNS" -gt 0 ]; then
+              echo "❌ Critical vulnerabilities found: $CRITICAL_VULNS"
+              exit 1
+            fi
+          fi
+
+  dependency-check:
+    name: Dependency Security Check
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run npm audit
+        run: |
+          cd services/auth-service
+          npm audit --audit-level=moderate --json > npm-audit-report.json || true
+          npm audit --audit-level=moderate
+
+      - name: Check for high/critical vulnerabilities
+        run: |
+          cd services/auth-service
+          if [ -f "npm-audit-report.json" ]; then
+            HIGH_VULNS=$(cat npm-audit-report.json | jq '.metadata.vulnerabilities.high // 0')
+            CRITICAL_VULNS=$(cat npm-audit-report.json | jq '.metadata.vulnerabilities.critical // 0')
+            
+            echo "High vulnerabilities: $HIGH_VULNS"
+            echo "Critical vulnerabilities: $CRITICAL_VULNS"
+            
+            if [ "$CRITICAL_VULNS" -gt 0 ]; then
+              echo "❌ Critical dependency vulnerabilities found"
+              exit 1
+            fi
+            
+            if [ "$HIGH_VULNS" -gt 0 ]; then
+              echo "⚠️ High-severity dependency vulnerabilities found"
+              # Don't fail for high, but warn
+            fi
+          fi
+
+      - name: Upload dependency audit report
+        uses: actions/upload-artifact@v3
+        if: always()
+        with:
+          name: dependency-audit-${{ github.run_number }}
+          path: services/auth-service/npm-audit-report.json
+          retention-days: 30
+
+  secrets-scan:
+    name: Secrets Scanning
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: TruffleHog OSS
+        id: trufflehog
+        uses: trufflesecurity/trufflehog@main
+        with:
+          path: ./
+          base: ${{ github.event.repository.default_branch }}
+          head: HEAD
+          extra_args: --debug --only-verified
+
+      - name: Upload TruffleHog results
+        uses: actions/upload-artifact@v3
+        if: always()
+        with:
+          name: trufflehog-results-${{ github.run_number }}
+          path: trufflehog-results.json
+          retention-days: 30
+
+  code-security:
+    name: Code Security Analysis
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v2
+        with:
+          languages: javascript
+          queries: security-and-quality
+
+      - name: Autobuild
+        uses: github/codeql-action/autobuild@v2
+
+      - name: Perform CodeQL Analysis
+        uses: github/codeql-action/analyze@v2
+        with:
+          category: "/language:javascript"
+
+  docker-security:
+    name: Docker Security Scan
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Build Docker image
+        run: |
+          cd services/auth-service
+          docker build -t zoptal-auth-service:latest .
+
+      - name: Run Trivy vulnerability scanner
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: 'zoptal-auth-service:latest'
+          format: 'sarif'
+          output: 'trivy-results.sarif'
+
+      - name: Upload Trivy scan results
+        uses: github/codeql-action/upload-sarif@v2
+        if: always()
+        with:
+          sarif_file: 'trivy-results.sarif'
+
+  security-scorecard:
+    name: OSSF Scorecard
+    runs-on: ubuntu-latest
+    permissions:
+      security-events: write
+      id-token: write
+      contents: read
+      actions: read
+    
+    steps:
+      - name: "Checkout code"
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: "Run analysis"
+        uses: ossf/scorecard-action@v2.3.1
+        with:
+          results_file: results.sarif
+          results_format: sarif
+          publish_results: true
+
+      - name: "Upload to code-scanning"
+        uses: github/codeql-action/upload-sarif@v2
+        with:
+          sarif_file: results.sarif

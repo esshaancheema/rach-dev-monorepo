@@ -1,0 +1,370 @@
+# Global Traffic Policies for Zoptal Service Mesh
+
+# Global destination rule for all services
+apiVersion: networking.istio.io/v1beta1
+kind: DestinationRule
+metadata:
+  name: default
+  namespace: zoptal-production
+spec:
+  host: "*.zoptal-production.svc.cluster.local"
+  trafficPolicy:
+    connectionPool:
+      tcp:
+        maxConnections: 100
+        connectTimeout: 30s
+        keepAlive:
+          time: 7200s
+          interval: 75s
+      http:
+        http1MaxPendingRequests: 64
+        http2MaxRequests: 1000
+        maxRequestsPerConnection: 10
+        maxRetries: 3
+        consecutiveGatewayErrors: 5
+        interval: 30s
+        baseEjectionTime: 30s
+        maxEjectionPercent: 50
+        h2UpgradePolicy: UPGRADE
+        idleTimeout: 60s
+        h1ConnectionPoolSize: 10
+    loadBalancer:
+      simple: LEAST_CONN
+      consistentHash:
+        useSourceIp: false
+    circuitBreaker:
+      consecutiveGatewayErrors: 5
+      consecutive5xxErrors: 5
+      interval: 30s
+      baseEjectionTime: 30s
+      maxEjectionPercent: 50
+      minHealthPercent: 30
+      splitExternalLocalOriginErrors: false
+    outlierDetection:
+      consecutiveGatewayErrors: 5
+      consecutive5xxErrors: 5
+      interval: 30s
+      baseEjectionTime: 30s
+      maxEjectionPercent: 50
+      minHealthPercent: 50
+      splitExternalLocalOriginErrors: false
+
+---
+# Global security policy - strict mTLS
+apiVersion: security.istio.io/v1beta1
+kind: PeerAuthentication
+metadata:
+  name: default
+  namespace: zoptal-production
+spec:
+  mtls:
+    mode: STRICT
+
+---
+# Global authorization policy - allow all authenticated traffic
+apiVersion: security.istio.io/v1beta1
+kind: AuthorizationPolicy
+metadata:
+  name: allow-authenticated
+  namespace: zoptal-production
+spec:
+  rules:
+  - from:
+    - source:
+        principals: ["*"]
+    when:
+    - key: source.mtls.mode
+      values: ["STRICT"]
+
+---
+# Global telemetry configuration
+apiVersion: telemetry.istio.io/v1alpha1
+kind: Telemetry
+metadata:
+  name: default
+  namespace: zoptal-production
+spec:
+  metrics:
+  - providers:
+    - name: prometheus
+  - overrides:
+    - match:
+        metric: ALL_METRICS
+      tagOverrides:
+        destination_service_name:
+          operation: UPSERT
+          value: "{{.destination_service_name | default \"unknown\"}}"
+        destination_service_namespace:
+          operation: UPSERT
+          value: "{{.destination_service_namespace | default \"unknown\"}}"
+        source_service_name:
+          operation: UPSERT
+          value: "{{.source_service_name | default \"unknown\"}}"
+        source_service_namespace:
+          operation: UPSERT
+          value: "{{.source_service_namespace | default \"unknown\"}}"
+        request_protocol:
+          operation: UPSERT
+          value: "{{.request_protocol | default \"http\"}}"
+  accessLogging:
+  - providers:
+    - name: otel
+  - formatOverride:
+      text: |
+        [%START_TIME%] "%REQ(:METHOD)% %REQ(X-ENVOY-ORIGINAL-PATH?:PATH)% %PROTOCOL%"
+        %RESPONSE_CODE% %RESPONSE_FLAGS% %BYTES_RECEIVED% %BYTES_SENT%
+        %DURATION% %RESP(X-ENVOY-UPSTREAM-SERVICE-TIME)% "%REQ(X-FORWARDED-FOR)%"
+        "%REQ(USER-AGENT)%" "%REQ(X-REQUEST-ID)%" "%REQ(:AUTHORITY)%" "%UPSTREAM_HOST%"
+        upstream_cluster="%UPSTREAM_CLUSTER%" response_flags="%RESPONSE_FLAGS%"
+  tracing:
+  - providers:
+    - name: jaeger
+  - customTags:
+      cluster_name:
+        literal:
+          value: "zoptal-production"
+      service_mesh:
+        literal:
+          value: "istio"
+
+---
+# Service mesh network policy
+apiVersion: networking.istio.io/v1beta1
+kind: Sidecar
+metadata:
+  name: default
+  namespace: zoptal-production
+spec:
+  egress:
+  - hosts:
+    - "./*"
+    - "istio-system/*"
+    - "kube-system/*"
+    - "zoptal-monitoring/*"
+  outboundTrafficPolicy:
+    mode: REGISTRY_ONLY
+
+---
+# Request timeout policy
+apiVersion: networking.istio.io/v1alpha3
+kind: EnvoyFilter
+metadata:
+  name: timeout-policy
+  namespace: zoptal-production
+spec:
+  configPatches:
+  - applyTo: HTTP_ROUTE
+    match:
+      context: SIDECAR_INBOUND
+    patch:
+      operation: MERGE
+      value:
+        timeout: 30s
+        idle_timeout: 60s
+
+---
+# Retry policy
+apiVersion: networking.istio.io/v1alpha3
+kind: EnvoyFilter
+metadata:
+  name: retry-policy
+  namespace: zoptal-production
+spec:
+  configPatches:
+  - applyTo: HTTP_ROUTE
+    match:
+      context: SIDECAR_OUTBOUND
+    patch:
+      operation: MERGE
+      value:
+        retry_policy:
+          retry_on: "5xx,gateway-error,connect-failure,refused-stream"
+          num_retries: 3
+          per_try_timeout: 10s
+          retry_back_off:
+            base_interval: "0.025s"
+            max_interval: "0.250s"
+
+---
+# Global rate limiting
+apiVersion: networking.istio.io/v1alpha3
+kind: EnvoyFilter
+metadata:
+  name: global-rate-limit
+  namespace: zoptal-production
+spec:
+  configPatches:
+  - applyTo: HTTP_FILTER
+    match:
+      context: GATEWAY
+      listener:
+        filterChain:
+          filter:
+            name: "envoy.filters.network.http_connection_manager"
+    patch:
+      operation: INSERT_BEFORE
+      value:
+        name: envoy.filters.http.local_ratelimit
+        typed_config:
+          "@type": type.googleapis.com/udpa.type.v1.TypedStruct
+          type_url: type.googleapis.com/envoy.extensions.filters.http.local_ratelimit.v3.LocalRateLimit
+          value:
+            stat_prefix: global_rate_limiter
+            token_bucket:
+              max_tokens: 10000
+              tokens_per_fill: 1000
+              fill_interval: 1s
+            filter_enabled:
+              default_value:
+                numerator: 100
+                denominator: HUNDRED
+            filter_enforced:
+              default_value:
+                numerator: 100
+                denominator: HUNDRED
+
+---
+# CORS policy
+apiVersion: networking.istio.io/v1alpha3
+kind: EnvoyFilter
+metadata:
+  name: cors-policy
+  namespace: zoptal-production
+spec:
+  configPatches:
+  - applyTo: HTTP_FILTER
+    match:
+      context: SIDECAR_INBOUND
+      listener:
+        filterChain:
+          filter:
+            name: "envoy.filters.network.http_connection_manager"
+    patch:
+      operation: INSERT_BEFORE
+      value:
+        name: envoy.filters.http.cors
+        typed_config:
+          "@type": type.googleapis.com/envoy.extensions.filters.http.cors.v3.Cors
+
+---
+# Security headers
+apiVersion: networking.istio.io/v1alpha3
+kind: EnvoyFilter
+metadata:
+  name: security-headers
+  namespace: zoptal-production
+spec:
+  configPatches:
+  - applyTo: HTTP_FILTER
+    match:
+      context: SIDECAR_INBOUND
+      listener:
+        filterChain:
+          filter:
+            name: envoy.filters.network.http_connection_manager
+    patch:
+      operation: INSERT_BEFORE
+      value:
+        name: envoy.filters.http.lua
+        typed_config:
+          "@type": type.googleapis.com/envoy.extensions.filters.http.lua.v3.Lua
+          inline_code: |
+            function envoy_on_response(response_handle)
+              response_handle:headers():add("X-Content-Type-Options", "nosniff")
+              response_handle:headers():add("X-Frame-Options", "DENY")
+              response_handle:headers():add("X-XSS-Protection", "1; mode=block")
+              response_handle:headers():add("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
+              response_handle:headers():add("Referrer-Policy", "strict-origin-when-cross-origin")
+              response_handle:headers():add("Content-Security-Policy", "default-src 'self'")
+            end
+
+---
+# Health check policy
+apiVersion: security.istio.io/v1beta1
+kind: AuthorizationPolicy
+metadata:
+  name: allow-health-checks
+  namespace: zoptal-production
+spec:
+  rules:
+  - to:
+    - operation:
+        methods: ["GET"]
+        paths: ["/health", "/ready", "/live", "/metrics"]
+  - from:
+    - source:
+        principals: ["cluster.local/ns/istio-system/sa/istio-ingressgateway-service-account"]
+    - source:
+        principals: ["cluster.local/ns/kube-system/sa/default"]
+
+---
+# Monitoring access policy
+apiVersion: security.istio.io/v1beta1
+kind: AuthorizationPolicy
+metadata:
+  name: allow-monitoring
+  namespace: zoptal-production
+spec:
+  rules:
+  - from:
+    - source:
+        namespaces: ["zoptal-monitoring", "istio-system"]
+    to:
+    - operation:
+        methods: ["GET"]
+        paths: ["/metrics", "/stats/prometheus"]
+
+---
+# Egress policy for external services
+apiVersion: networking.istio.io/v1beta1
+kind: ServiceEntry
+metadata:
+  name: external-services
+  namespace: zoptal-production
+spec:
+  hosts:
+  - httpbin.org
+  - api.stripe.com
+  - api.openai.com
+  - api.anthropic.com
+  - smtp.gmail.com
+  - accounts.google.com
+  ports:
+  - number: 80
+    name: http
+    protocol: HTTP
+  - number: 443
+    name: https
+    protocol: HTTPS
+  - number: 587
+    name: smtp
+    protocol: TCP
+  location: MESH_EXTERNAL
+  resolution: DNS
+
+---
+# Default virtual service for unmatched traffic
+apiVersion: networking.istio.io/v1beta1
+kind: VirtualService
+metadata:
+  name: default
+  namespace: zoptal-production
+spec:
+  hosts:
+  - "*"
+  gateways:
+  - zoptal-gateway
+  http:
+  - match:
+    - uri:
+        prefix: "/"
+    route:
+    - destination:
+        host: istio-ingressgateway.istio-system.svc.cluster.local
+        port:
+          number: 80
+    fault:
+      abort:
+        percentage:
+          value: 100
+        httpStatus: 404

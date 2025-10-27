@@ -1,0 +1,192 @@
+syntax = "proto3";
+
+package zoptal.project.v1;
+
+option go_package = "github.com/zoptal/service-mesh/gen/go/project/v1";
+
+import "google/protobuf/timestamp.proto";
+import "google/protobuf/empty.proto";
+import "google/protobuf/struct.proto";
+
+// Project Service - Internal gRPC API
+service ProjectService {
+  // Get project by ID
+  rpc GetProject(GetProjectRequest) returns (GetProjectResponse);
+  
+  // List user projects
+  rpc ListUserProjects(ListUserProjectsRequest) returns (ListUserProjectsResponse);
+  
+  // Create project
+  rpc CreateProject(CreateProjectRequest) returns (CreateProjectResponse);
+  
+  // Update project
+  rpc UpdateProject(UpdateProjectRequest) returns (UpdateProjectResponse);
+  
+  // Delete project
+  rpc DeleteProject(DeleteProjectRequest) returns (DeleteProjectResponse);
+  
+  // Check project ownership
+  rpc CheckProjectAccess(CheckProjectAccessRequest) returns (CheckProjectAccessResponse);
+  
+  // Get project analytics data
+  rpc GetProjectAnalytics(GetProjectAnalyticsRequest) returns (GetProjectAnalyticsResponse);
+  
+  // Health check
+  rpc HealthCheck(google.protobuf.Empty) returns (HealthCheckResponse);
+}
+
+// Project retrieval
+message GetProjectRequest {
+  string project_id = 1;
+  string user_id = 2; // For access control
+}
+
+message GetProjectResponse {
+  Project project = 1;
+  string error_message = 2;
+}
+
+// List projects
+message ListUserProjectsRequest {
+  string user_id = 1;
+  int32 page = 2;
+  int32 limit = 3;
+  string status = 4; // Optional filter
+  string type = 5;   // Optional filter
+}
+
+message ListUserProjectsResponse {
+  repeated Project projects = 1;
+  int32 total = 2;
+  int32 page = 3;
+  int32 limit = 4;
+  string error_message = 5;
+}
+
+// Project creation
+message CreateProjectRequest {
+  string user_id = 1;
+  string name = 2;
+  string description = 3;
+  ProjectType type = 4;
+  google.protobuf.Struct settings = 5;
+}
+
+message CreateProjectResponse {
+  Project project = 1;
+  string error_message = 2;
+}
+
+// Project update
+message UpdateProjectRequest {
+  string project_id = 1;
+  string user_id = 2; // For access control
+  string name = 3;
+  string description = 4;
+  ProjectStatus status = 5;
+  google.protobuf.Struct settings = 6;
+}
+
+message UpdateProjectResponse {
+  Project project = 1;
+  string error_message = 2;
+}
+
+// Project deletion
+message DeleteProjectRequest {
+  string project_id = 1;
+  string user_id = 2; // For access control
+}
+
+message DeleteProjectResponse {
+  bool success = 1;
+  string error_message = 2;
+}
+
+// Access control
+message CheckProjectAccessRequest {
+  string project_id = 1;
+  string user_id = 2;
+  string required_permission = 3; // read, write, admin
+}
+
+message CheckProjectAccessResponse {
+  bool has_access = 1;
+  string permission_level = 2;
+  string error_message = 3;
+}
+
+// Analytics
+message GetProjectAnalyticsRequest {
+  string project_id = 1;
+  string user_id = 2; // For access control
+  google.protobuf.Timestamp start_date = 3;
+  google.protobuf.Timestamp end_date = 4;
+  repeated string metrics = 5; // views, sessions, conversions, etc.
+}
+
+message GetProjectAnalyticsResponse {
+  repeated AnalyticsMetric metrics = 1;
+  string error_message = 2;
+}
+
+message AnalyticsMetric {
+  string name = 1;
+  repeated DataPoint data_points = 2;
+}
+
+message DataPoint {
+  google.protobuf.Timestamp timestamp = 1;
+  double value = 2;
+  google.protobuf.Struct metadata = 3;
+}
+
+// Data models
+message Project {
+  string id = 1;
+  string user_id = 2;
+  string name = 3;
+  string description = 4;
+  string slug = 5;
+  ProjectType type = 6;
+  ProjectStatus status = 7;
+  string thumbnail = 8;
+  google.protobuf.Struct settings = 9;
+  google.protobuf.Struct metadata = 10;
+  google.protobuf.Timestamp created_at = 11;
+  google.protobuf.Timestamp updated_at = 12;
+}
+
+enum ProjectType {
+  PROJECT_TYPE_UNSPECIFIED = 0;
+  WEBSITE = 1;
+  LANDING_PAGE = 2;
+  BLOG = 3;
+  ECOMMERCE = 4;
+  PORTFOLIO = 5;
+  DASHBOARD = 6;
+  DOCUMENTATION = 7;
+}
+
+enum ProjectStatus {
+  PROJECT_STATUS_UNSPECIFIED = 0;
+  DRAFT = 1;
+  DEVELOPMENT = 2;
+  REVIEW = 3;
+  ACTIVE = 4;
+  PUBLISHED = 5;
+  ARCHIVED = 6;
+  DELETED = 7;
+}
+
+// Health check
+message HealthCheckResponse {
+  enum Status {
+    UNKNOWN = 0;
+    SERVING = 1;
+    NOT_SERVING = 2;
+    SERVICE_UNKNOWN = 3;
+  }
+  Status status = 1;
+  string message = 2;
+}

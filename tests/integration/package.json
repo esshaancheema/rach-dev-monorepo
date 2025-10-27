@@ -1,0 +1,46 @@
+{
+  "name": "@zoptal/integration-tests",
+  "version": "1.0.0",
+  "description": "Comprehensive integration tests for Zoptal platform",
+  "main": "index.js",
+  "scripts": {
+    "test": "jest --config=jest.config.js",
+    "test:watch": "jest --config=jest.config.js --watch",
+    "test:coverage": "jest --config=jest.config.js --coverage",
+    "test:auth": "jest --config=jest.config.js auth-service",
+    "test:project": "jest --config=jest.config.js project-service",
+    "test:ai": "jest --config=jest.config.js ai-service",
+    "test:billing": "jest --config=jest.config.js billing-service",
+    "test:notification": "jest --config=jest.config.js notification-service",
+    "test:workflows": "jest --config=jest.config.js workflows",
+    "test:performance": "jest --config=jest.config.js performance",
+    "test:security": "jest --config=jest.config.js security",
+    "setup": "node setup/setup-test-environment.js",
+    "teardown": "node setup/teardown-test-environment.js",
+    "seed": "node setup/seed-test-data.js",
+    "clean": "node setup/clean-test-data.js"
+  },
+  "dependencies": {
+    "@types/jest": "^29.5.12",
+    "@types/node": "^20.12.7",
+    "@types/supertest": "^6.0.2",
+    "axios": "^1.6.8",
+    "dotenv": "^16.4.5",
+    "jest": "^29.7.0",
+    "jest-environment-node": "^29.7.0",
+    "jsonwebtoken": "^9.0.2",
+    "pg": "^8.11.5",
+    "redis": "^4.6.13",
+    "supertest": "^7.0.0",
+    "testcontainers": "^10.7.2",
+    "ts-jest": "^29.1.2",
+    "typescript": "^5.4.5",
+    "uuid": "^9.0.1",
+    "faker": "^6.6.6",
+    "wait-for-expect": "^3.0.2"
+  },
+  "devDependencies": {
+    "@types/faker": "^6.6.9",
+    "@types/uuid": "^9.0.8"
+  }
+}

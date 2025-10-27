@@ -1,0 +1,246 @@
+{
+  "version": 2,
+  "name": "zoptal-web-main",
+  "builds": [
+    {
+      "src": "package.json",
+      "use": "@vercel/next@latest",
+      "config": {
+        "distDir": ".next"
+      }
+    }
+  ],
+  "functions": {
+    "app/api/ai-demo/route.ts": {
+      "maxDuration": 30
+    },
+    "app/api/lead-capture/route.ts": {
+      "maxDuration": 10
+    },
+    "app/api/newsletter/route.ts": {
+      "maxDuration": 10
+    },
+    "app/api/contact/route.ts": {
+      "maxDuration": 15
+    },
+    "app/api/revalidate/route.ts": {
+      "maxDuration": 5
+    }
+  },
+  "regions": ["iad1", "sfo1"],
+  "env": {
+    "NODE_ENV": "production"
+  },
+  "build": {
+    "env": {
+      "ANALYZE": "false",
+      "NEXT_TELEMETRY_DISABLED": "1"
+    }
+  },
+  "headers": [
+    {
+      "source": "/(.*)",
+      "headers": [
+        {
+          "key": "X-Content-Type-Options",
+          "value": "nosniff"
+        },
+        {
+          "key": "X-Frame-Options",
+          "value": "DENY"
+        },
+        {
+          "key": "X-XSS-Protection",
+          "value": "1; mode=block"
+        },
+        {
+          "key": "Referrer-Policy",
+          "value": "origin-when-cross-origin"
+        },
+        {
+          "key": "Permissions-Policy",
+          "value": "camera=(), microphone=(), geolocation=(), interest-cohort=()"
+        }
+      ]
+    },
+    {
+      "source": "/api/(.*)",
+      "headers": [
+        {
+          "key": "Access-Control-Allow-Origin",
+          "value": "https://zoptal.com"
+        },
+        {
+          "key": "Access-Control-Allow-Methods",
+          "value": "GET, POST, PUT, DELETE, OPTIONS"
+        },
+        {
+          "key": "Access-Control-Allow-Headers",
+          "value": "Content-Type, Authorization"
+        }
+      ]
+    },
+    {
+      "source": "/static/(.*)",
+      "headers": [
+        {
+          "key": "Cache-Control",
+          "value": "public, max-age=31536000, immutable"
+        }
+      ]
+    },
+    {
+      "source": "/_next/static/(.*)",
+      "headers": [
+        {
+          "key": "Cache-Control",
+          "value": "public, max-age=31536000, immutable"
+        }
+      ]
+    },
+    {
+      "source": "/images/(.*)",
+      "headers": [
+        {
+          "key": "Cache-Control",
+          "value": "public, max-age=2592000"
+        }
+      ]
+    },
+    {
+      "source": "/fonts/(.*)",
+      "headers": [
+        {
+          "key": "Cache-Control",
+          "value": "public, max-age=31536000, immutable"
+        }
+      ]
+    },
+    {
+      "source": "/(.*).xml",
+      "headers": [
+        {
+          "key": "Content-Type",
+          "value": "application/xml"
+        },
+        {
+          "key": "Cache-Control",
+          "value": "public, max-age=3600"
+        }
+      ]
+    },
+    {
+      "source": "/robots.txt",
+      "headers": [
+        {
+          "key": "Content-Type",
+          "value": "text/plain"
+        },
+        {
+          "key": "Cache-Control",
+          "value": "public, max-age=3600"
+        }
+      ]
+    }
+  ],
+  "redirects": [
+    {
+      "source": "/services/custom-software",
+      "destination": "/services/custom-software-development",
+      "permanent": true
+    },
+    {
+      "source": "/services/mobile-app",
+      "destination": "/services/mobile-app-development",
+      "permanent": true
+    },
+    {
+      "source": "/services/ai-agents",
+      "destination": "/services/ai-agents-development",
+      "permanent": true
+    },
+    {
+      "source": "/blog",
+      "destination": "/resources/blog",
+      "permanent": true
+    },
+    {
+      "source": "/blog/(.*)",
+      "destination": "/resources/blog/$1",
+      "permanent": true
+    },
+    {
+      "source": "/docs",
+      "destination": "/resources/documentation",
+      "permanent": true
+    },
+    {
+      "source": "/docs/(.*)",
+      "destination": "/resources/documentation/$1",
+      "permanent": true
+    },
+    {
+      "source": "/help",
+      "destination": "/resources/help-center",
+      "permanent": true
+    },
+    {
+      "source": "/support",
+      "destination": "/resources/help-center",
+      "permanent": true
+    }
+  ],
+  "rewrites": [
+    {
+      "source": "/api/auth/(.*)",
+      "destination": "https://auth-service.zoptal.com/api/auth/$1"
+    },
+    {
+      "source": "/api/ai/(.*)",
+      "destination": "https://ai-service.zoptal.com/api/ai/$1"
+    },
+    {
+      "source": "/api/analytics/(.*)",
+      "destination": "https://analytics-service.zoptal.com/api/analytics/$1"
+    },
+    {
+      "source": "/api/billing/(.*)",
+      "destination": "https://billing-service.zoptal.com/api/billing/$1"
+    },
+    {
+      "source": "/health",
+      "destination": "/api/health"
+    }
+  ],
+  "trailingSlash": false,
+  "cleanUrls": true,
+  "github": {
+    "enabled": false
+  },
+  "crons": [
+    {
+      "path": "/api/cron/sitemap-update",
+      "schedule": "0 2 * * *"
+    },
+    {
+      "path": "/api/cron/analytics-report",
+      "schedule": "0 1 * * 1"
+    }
+  ],
+  "images": {
+    "domains": [
+      "images.ctfassets.net",
+      "cdn.sanity.io",
+      "res.cloudinary.com",
+      "zoptal.com",
+      "cdn.zoptal.com"
+    ],
+    "formats": ["image/avif", "image/webp"],
+    "minimumCacheTTL": 2592000
+  },
+  "outputFileTracing": true,
+  "experimental": {
+    "optimizeCss": true,
+    "scrollRestoration": true
+  }
+}

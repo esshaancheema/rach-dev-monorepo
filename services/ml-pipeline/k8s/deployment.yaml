@@ -1,0 +1,506 @@
+# ML Pipeline Kubernetes Deployment
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ml-pipeline
+  namespace: zoptal-production
+  labels:
+    app: ml-pipeline
+    version: v1.0.0
+    component: ml-services
+spec:
+  replicas: 3
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  selector:
+    matchLabels:
+      app: ml-pipeline
+  template:
+    metadata:
+      labels:
+        app: ml-pipeline
+        version: v1.0.0
+        component: ml-services
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8080"
+        prometheus.io/path: "/metrics"
+    spec:
+      serviceAccountName: ml-pipeline
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 1000
+      containers:
+      - name: ml-pipeline
+        image: zoptal/ml-pipeline:v1.0.0
+        imagePullPolicy: IfNotPresent
+        ports:
+        - containerPort: 8080
+          name: http
+          protocol: TCP
+        - containerPort: 9090
+          name: prometheus
+          protocol: TCP
+        env:
+        - name: ENVIRONMENT
+          value: "production"
+        - name: DEBUG
+          value: "false"
+        
+        # Database Configuration
+        - name: DATABASE_URL
+          valueFrom:
+            secretKeyRef:
+              name: ml-pipeline-secrets
+              key: database-url
+        
+        # Redis Configuration
+        - name: REDIS_URL
+          valueFrom:
+            secretKeyRef:
+              name: ml-pipeline-secrets
+              key: redis-url
+        
+        # CORS Configuration
+        - name: CORS_ORIGINS
+          value: "https://zoptal.com,https://*.zoptal.com,https://app.zoptal.com"
+        
+        # ML Configuration
+        - name: MODEL_STORAGE_PATH
+          value: "/app/models"
+        - name: MODEL_REGISTRY_URL
+          value: "https://ml-registry.zoptal.com"
+        - name: MLFLOW_TRACKING_URI
+          value: "https://mlflow.zoptal.com"
+        - name: MLFLOW_EXPERIMENT_NAME
+          value: "zoptal-production"
+        
+        # Training Configuration
+        - name: MAX_TRAINING_TIME
+          value: "7200"
+        - name: MAX_CONCURRENT_JOBS
+          value: "10"
+        - name: AUTO_ML_ENABLED
+          value: "true"
+        
+        # Prediction Configuration
+        - name: PREDICTION_CACHE_TTL
+          value: "600"
+        - name: MAX_BATCH_SIZE
+          value: "5000"
+        
+        # Data Configuration
+        - name: DATA_STORAGE_PATH
+          value: "/app/data"
+        - name: MAX_DATA_SIZE
+          value: "5368709120"  # 5GB
+        
+        # Security Configuration
+        - name: SECRET_KEY
+          valueFrom:
+            secretKeyRef:
+              name: ml-pipeline-secrets
+              key: secret-key
+        
+        # Monitoring Configuration
+        - name: PROMETHEUS_PORT
+          value: "9090"
+        - name: LOG_LEVEL
+          value: "INFO"
+        
+        # External Services
+        - name: FEATURE_STORE_URL
+          value: "https://feature-store.zoptal.com"
+        - name: DATA_WAREHOUSE_URL
+          valueFrom:
+            secretKeyRef:
+              name: ml-pipeline-secrets
+              key: data-warehouse-url
+        
+        # Model Serving Configuration
+        - name: MODEL_SERVER_WORKERS
+          value: "8"
+        - name: MODEL_SERVER_TIMEOUT
+          value: "120"
+        
+        # Notification Configuration
+        - name: SLACK_WEBHOOK_URL
+          valueFrom:
+            secretKeyRef:
+              name: ml-pipeline-secrets
+              key: slack-webhook-url
+        - name: EMAIL_NOTIFICATIONS
+          value: "true"
+        
+        # Resource Limits
+        - name: MAX_MEMORY_USAGE
+          value: "16GB"
+        - name: MAX_CPU_USAGE
+          value: "16"
+        - name: GPU_ENABLED
+          value: "true"
+        
+        resources:
+          requests:
+            memory: "2Gi"
+            cpu: "1000m"
+            nvidia.com/gpu: 1
+          limits:
+            memory: "16Gi"
+            cpu: "8000m"
+            nvidia.com/gpu: 1
+        
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8080
+          initialDelaySeconds: 60
+          periodSeconds: 30
+          timeoutSeconds: 10
+          failureThreshold: 3
+          
+        readinessProbe:
+          httpGet:
+            path: /ready
+            port: 8080
+          initialDelaySeconds: 15
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+          
+        startupProbe:
+          httpGet:
+            path: /health
+            port: 8080
+          initialDelaySeconds: 30
+          periodSeconds: 10
+          timeoutSeconds: 10
+          failureThreshold: 30
+        
+        volumeMounts:
+        - name: model-storage
+          mountPath: /app/models
+        - name: data-storage
+          mountPath: /app/data
+        - name: logs
+          mountPath: /app/logs
+        - name: tmp
+          mountPath: /tmp
+      
+      volumes:
+      - name: model-storage
+        persistentVolumeClaim:
+          claimName: ml-pipeline-models-pvc
+      - name: data-storage
+        persistentVolumeClaim:
+          claimName: ml-pipeline-data-pvc
+      - name: logs
+        emptyDir: {}
+      - name: tmp
+        emptyDir: {}
+      
+      nodeSelector:
+        node-type: gpu-enabled
+      
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 100
+            podAffinityTerm:
+              labelSelector:
+                matchExpressions:
+                - key: app
+                  operator: In
+                  values:
+                  - ml-pipeline
+              topologyKey: kubernetes.io/hostname
+      
+      tolerations:
+      - key: "node.kubernetes.io/not-ready"
+        operator: "Exists"
+        effect: "NoExecute"
+        tolerationSeconds: 300
+      - key: "node.kubernetes.io/unreachable"
+        operator: "Exists"
+        effect: "NoExecute"
+        tolerationSeconds: 300
+      - key: "nvidia.com/gpu"
+        operator: "Exists"
+        effect: "NoSchedule"
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ml-pipeline
+  namespace: zoptal-production
+  labels:
+    app: ml-pipeline
+spec:
+  type: ClusterIP
+  ports:
+  - name: http
+    port: 8080
+    targetPort: 8080
+    protocol: TCP
+  - name: prometheus
+    port: 9090
+    targetPort: 9090
+    protocol: TCP
+  selector:
+    app: ml-pipeline
+
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: ml-pipeline
+  namespace: zoptal-production
+  labels:
+    app: ml-pipeline
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: ml-pipeline
+  namespace: zoptal-production
+rules:
+- apiGroups: [""]
+  resources: ["secrets", "configmaps", "persistentvolumeclaims"]
+  verbs: ["get", "list", "watch"]
+- apiGroups: ["batch"]
+  resources: ["jobs"]
+  verbs: ["create", "get", "list", "watch", "delete"]
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: ml-pipeline
+  namespace: zoptal-production
+subjects:
+- kind: ServiceAccount
+  name: ml-pipeline
+  namespace: zoptal-production
+roleRef:
+  kind: Role
+  name: ml-pipeline
+  apiGroup: rbac.authorization.k8s.io
+
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: ml-pipeline-secrets
+  namespace: zoptal-production
+  labels:
+    app: ml-pipeline
+type: Opaque
+data:
+  database-url: cG9zdGdyZXNxbDovL21sdXNlcjptbHBhc3N3b3JkQHpvcHRhbC1wb3N0Z3Jlc3FsLnpvcHRhbC1wcm9kdWN0aW9uLnN2Yy5jbHVzdGVyLmxvY2FsOjU0MzIvem9wdGFsX21s # postgresql://mluser:mlpassword@zoptal-postgresql.zoptal-production.svc.cluster.local:5432/zoptal_ml
+  redis-url: cmVkaXM6Ly96b3B0YWwtcmVkaXMuem9wdGFsLXByb2R1Y3Rpb24uc3ZjLmNsdXN0ZXIubG9jYWw6NjM3OS8x # redis://zoptal-redis.zoptal-production.svc.cluster.local:6379/1
+  secret-key: bWwtcGlwZWxpbmUtc2VjcmV0LWtleS0xMjM0NTY3ODkw # ml-pipeline-secret-key-1234567890
+  data-warehouse-url: cG9zdGdyZXNxbDovL2R3dXNlcjpkd3Bhc3N3b3JkQHpvcHRhbC1kYXRhLXdhcmVob3VzZS56b3B0YWwtcHJvZHVjdGlvbi5zdmMuY2x1c3Rlci5sb2NhbDo1NDMyL3pvcHRhbF9kdw== # postgresql://dwuser:dwpassword@zoptal-data-warehouse.zoptal-production.svc.cluster.local:5432/zoptal_dw
+  slack-webhook-url: eW91ci1zbGFjay13ZWJob29rLXVybC1oZXJl # your-slack-webhook-url-here (base64 encoded)
+
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: ml-pipeline-models-pvc
+  namespace: zoptal-production
+  labels:
+    app: ml-pipeline
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: fast-ssd
+  resources:
+    requests:
+      storage: 100Gi
+
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: ml-pipeline-data-pvc
+  namespace: zoptal-production
+  labels:
+    app: ml-pipeline
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: fast-ssd
+  resources:
+    requests:
+      storage: 500Gi
+
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: ml-pipeline
+  namespace: zoptal-production
+  labels:
+    app: ml-pipeline
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: ml-pipeline
+  minReplicas: 3
+  maxReplicas: 20
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 70
+  - type: Resource
+    resource:
+      name: memory
+      target:
+        type: Utilization
+        averageUtilization: 80
+  - type: Resource
+    resource:
+      name: nvidia.com/gpu
+      target:
+        type: Utilization
+        averageUtilization: 85
+  behavior:
+    scaleDown:
+      stabilizationWindowSeconds: 300
+      policies:
+      - type: Percent
+        value: 10
+        periodSeconds: 60
+    scaleUp:
+      stabilizationWindowSeconds: 60
+      policies:
+      - type: Percent
+        value: 100
+        periodSeconds: 60
+      - type: Pods
+        value: 4
+        periodSeconds: 60
+
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: ml-pipeline
+  namespace: zoptal-production
+  labels:
+    app: ml-pipeline
+spec:
+  minAvailable: 2
+  selector:
+    matchLabels:
+      app: ml-pipeline
+
+---
+apiVersion: networking.istio.io/v1beta1
+kind: VirtualService
+metadata:
+  name: ml-pipeline
+  namespace: zoptal-production
+spec:
+  hosts:
+  - ml.zoptal.com
+  gateways:
+  - zoptal-gateway
+  http:
+  - match:
+    - uri:
+        prefix: /
+    route:
+    - destination:
+        host: ml-pipeline
+        port:
+          number: 8080
+    timeout: 300s
+    retries:
+      attempts: 3
+      perTryTimeout: 100s
+      retryOn: 5xx,gateway-error,connect-failure,refused-stream
+
+---
+apiVersion: networking.istio.io/v1beta1
+kind: DestinationRule
+metadata:
+  name: ml-pipeline
+  namespace: zoptal-production
+spec:
+  host: ml-pipeline
+  trafficPolicy:
+    connectionPool:
+      tcp:
+        maxConnections: 100
+      http:
+        http1MaxPendingRequests: 20
+        maxRequestsPerConnection: 20
+        maxRetries: 3
+        consecutiveGatewayErrors: 5
+        interval: 30s
+        baseEjectionTime: 30s
+        maxEjectionPercent: 50
+    circuitBreaker:
+      consecutiveGatewayErrors: 5
+      consecutive5xxErrors: 5
+      interval: 30s
+      baseEjectionTime: 30s
+      maxEjectionPercent: 50
+    outlierDetection:
+      consecutiveGatewayErrors: 5
+      consecutive5xxErrors: 5
+      interval: 30s
+      baseEjectionTime: 30s
+      maxEjectionPercent: 50
+      minHealthPercent: 50
+
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: ml-pipeline
+  namespace: zoptal-production
+  labels:
+    app: ml-pipeline
+spec:
+  selector:
+    matchLabels:
+      app: ml-pipeline
+  endpoints:
+  - port: prometheus
+    interval: 15s
+    path: /metrics
+    honorLabels: true
+
+---
+# GPU Node Pool Configuration (if using GKE)
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: gpu-node-config
+  namespace: zoptal-production
+data:
+  node-config.yaml: |
+    apiVersion: v1
+    kind: Node
+    metadata:
+      labels:
+        node-type: gpu-enabled
+        gpu-type: nvidia-tesla-v100
+    spec:
+      taints:
+      - key: nvidia.com/gpu
+        value: "true"
+        effect: NoSchedule

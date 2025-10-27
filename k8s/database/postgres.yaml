@@ -1,0 +1,135 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: postgres-pvc
+  namespace: zoptal
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 20Gi
+  storageClassName: gp2
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: zoptal-postgres
+  namespace: zoptal
+  labels:
+    app: postgres
+    component: database
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: postgres
+  template:
+    metadata:
+      labels:
+        app: postgres
+        component: database
+    spec:
+      containers:
+      - name: postgres
+        image: postgres:15-alpine
+        ports:
+        - containerPort: 5432
+        env:
+        - name: POSTGRES_DB
+          valueFrom:
+            configMapKeyRef:
+              name: zoptal-config
+              key: DATABASE_NAME
+        - name: POSTGRES_USER
+          valueFrom:
+            secretKeyRef:
+              name: zoptal-secrets
+              key: DATABASE_USER
+        - name: POSTGRES_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: zoptal-secrets
+              key: DATABASE_PASSWORD
+        - name: PGDATA
+          value: /var/lib/postgresql/data/pgdata
+        volumeMounts:
+        - name: postgres-storage
+          mountPath: /var/lib/postgresql/data
+        - name: init-scripts
+          mountPath: /docker-entrypoint-initdb.d
+        resources:
+          requests:
+            memory: "512Mi"
+            cpu: "250m"
+          limits:
+            memory: "2Gi"
+            cpu: "1000m"
+        livenessProbe:
+          exec:
+            command:
+            - pg_isready
+            - -U
+            - postgres
+          initialDelaySeconds: 30
+          periodSeconds: 10
+        readinessProbe:
+          exec:
+            command:
+            - pg_isready
+            - -U
+            - postgres
+          initialDelaySeconds: 5
+          periodSeconds: 5
+      volumes:
+      - name: postgres-storage
+        persistentVolumeClaim:
+          claimName: postgres-pvc
+      - name: init-scripts
+        configMap:
+          name: postgres-init-scripts
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: zoptal-postgres
+  namespace: zoptal
+  labels:
+    app: postgres
+    component: database
+spec:
+  ports:
+  - port: 5432
+    targetPort: 5432
+    protocol: TCP
+  selector:
+    app: postgres
+  type: ClusterIP
+
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: postgres-init-scripts
+  namespace: zoptal
+data:
+  init.sql: |
+    -- Create extensions
+    CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
+    CREATE EXTENSION IF NOT EXISTS "pgcrypto";
+    
+    -- Create additional databases if needed
+    -- CREATE DATABASE zoptal_test;
+    
+    -- Set up connection limits and other optimizations
+    ALTER SYSTEM SET max_connections = 200;
+    ALTER SYSTEM SET shared_buffers = '256MB';
+    ALTER SYSTEM SET effective_cache_size = '1GB';
+    ALTER SYSTEM SET maintenance_work_mem = '64MB';
+    ALTER SYSTEM SET checkpoint_completion_target = 0.9;
+    ALTER SYSTEM SET wal_buffers = '16MB';
+    ALTER SYSTEM SET default_statistics_target = 100;

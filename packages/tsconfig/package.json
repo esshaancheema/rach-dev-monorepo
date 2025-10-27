@@ -1,0 +1,34 @@
+{
+  "name": "@zoptal/tsconfig",
+  "version": "0.1.0",
+  "description": "Shared TypeScript configurations for Zoptal monorepo",
+  "main": "index.js",
+  "files": [
+    "base.json",
+    "nextjs.json",
+    "react-library.json",
+    "node.json",
+    "README.md"
+  ],
+  "scripts": {
+    "lint": "echo 'No linting needed for config files'"
+  },
+  "keywords": [
+    "typescript",
+    "tsconfig",
+    "config",
+    "zoptal",
+    "shared"
+  ],
+  "author": "Zoptal Team",
+  "license": "MIT",
+  "devDependencies": {
+    "typescript": "^5.3.3"
+  },
+  "peerDependencies": {
+    "typescript": ">=5.0.0"
+  },
+  "publishConfig": {
+    "access": "restricted"
+  }
+}

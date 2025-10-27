@@ -1,0 +1,176 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: zoptal-ingress
+  namespace: zoptal
+  annotations:
+    kubernetes.io/ingress.class: "nginx"
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/force-ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/proxy-body-size: "100m"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "300"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "300"
+    nginx.ingress.kubernetes.io/proxy-connect-timeout: "300"
+    nginx.ingress.kubernetes.io/rate-limit: "100"
+    nginx.ingress.kubernetes.io/rate-limit-window: "1m"
+    cert-manager.io/cluster-issuer: "letsencrypt-prod"
+    nginx.ingress.kubernetes.io/configuration-snippet: |
+      add_header X-Frame-Options "SAMEORIGIN";
+      add_header X-Content-Type-Options "nosniff";
+      add_header X-XSS-Protection "1; mode=block";
+      add_header Referrer-Policy "strict-origin-when-cross-origin";
+      add_header Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval' https://cdn.jsdelivr.net https://unpkg.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data: https:; connect-src 'self' https://api.stripe.com https://api.openai.com https://api.anthropic.com";
+spec:
+  tls:
+  - hosts:
+    - zoptal.com
+    - www.zoptal.com
+    - api.zoptal.com
+    secretName: zoptal-tls
+  rules:
+  # Main Website
+  - host: zoptal.com
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: zoptal-web-main
+            port:
+              number: 3000
+  - host: www.zoptal.com
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: zoptal-web-main
+            port:
+              number: 3000
+
+  # API Gateway
+  - host: api.zoptal.com
+    http:
+      paths:
+      # Auth Service
+      - path: /auth
+        pathType: Prefix
+        backend:
+          service:
+            name: zoptal-auth-service
+            port:
+              number: 4001
+      - path: /admin
+        pathType: Prefix
+        backend:
+          service:
+            name: zoptal-auth-service
+            port:
+              number: 4001
+      - path: /user
+        pathType: Prefix
+        backend:
+          service:
+            name: zoptal-auth-service
+            port:
+              number: 4001
+      
+      # Project Service
+      - path: /projects
+        pathType: Prefix
+        backend:
+          service:
+            name: zoptal-project-service
+            port:
+              number: 4002
+      - path: /templates
+        pathType: Prefix
+        backend:
+          service:
+            name: zoptal-project-service
+            port:
+              number: 4002
+      
+      # AI Service
+      - path: /ai
+        pathType: Prefix
+        backend:
+          service:
+            name: zoptal-ai-service
+            port:
+              number: 4003
+      
+      # Billing Service
+      - path: /billing
+        pathType: Prefix
+        backend:
+          service:
+            name: zoptal-billing-service
+            port:
+              number: 4004
+      
+      # Notification Service
+      - path: /notifications
+        pathType: Prefix
+        backend:
+          service:
+            name: zoptal-notification-service
+            port:
+              number: 4005
+      
+      # Analytics Service
+      - path: /analytics
+        pathType: Prefix
+        backend:
+          service:
+            name: zoptal-analytics-service
+            port:
+              number: 4006
+
+---
+# Certificate Issuer for Let's Encrypt
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: letsencrypt-prod
+spec:
+  acme:
+    server: https://acme-v02.api.letsencrypt.org/directory
+    email: admin@zoptal.com
+    privateKeySecretRef:
+      name: letsencrypt-prod
+    solvers:
+    - http01:
+        ingress:
+          class: nginx
+
+---
+# Rate Limiting Configuration
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: nginx-rate-limiting
+  namespace: zoptal
+data:
+  rate-limiting.conf: |
+    # Global rate limiting
+    limit_req_zone $binary_remote_addr zone=global:10m rate=10r/s;
+    limit_req_zone $binary_remote_addr zone=api:10m rate=100r/m;
+    limit_req_zone $binary_remote_addr zone=auth:10m rate=5r/s;
+    
+    # API specific rate limiting
+    location ~* ^/api/(auth|admin)/ {
+        limit_req zone=auth burst=10 nodelay;
+        limit_req_status 429;
+    }
+    
+    location ~* ^/api/ {
+        limit_req zone=api burst=20 nodelay;
+        limit_req_status 429;
+    }
+    
+    # Global rate limiting for all other requests
+    limit_req zone=global burst=50 nodelay;
+    limit_req_status 429;

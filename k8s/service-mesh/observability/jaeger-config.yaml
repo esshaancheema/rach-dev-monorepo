@@ -1,0 +1,382 @@
+# Jaeger Distributed Tracing Configuration for Service Mesh
+
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: jaeger-configuration
+  namespace: istio-system
+  labels:
+    app: jaeger
+data:
+  jaeger.yaml: |
+    storage:
+      type: elasticsearch
+      elasticsearch:
+        server-urls: http://elasticsearch.zoptal-monitoring:9200
+        index-prefix: jaeger
+        username: elastic
+        password: changeme
+        num-shards: 1
+        num-replicas: 0
+        timeout: 0s
+        sniffer: false
+        sniffer-tls-enabled: false
+        max-doc-count: 10000
+        max-span-age: 168h
+        log-level: info
+        send-get-body-as: json
+        tags-as-fields:
+          all: false
+          dotReplacement: "@"
+          include: http.status_code
+          file: /etc/jaeger/tags-mapping.properties
+        create-index-templates: true
+    
+    query:
+      max-clock-skew-adjustment: 0s
+      ui-config: /etc/jaeger/ui-config.json
+
+    sampling:
+      default_strategy:
+        type: probabilistic
+        param: 0.1
+      max_traces_per_second: 100
+      strategies:
+        - service: "auth-service"
+          type: probabilistic
+          param: 0.3
+        - service: "project-service"
+          type: probabilistic
+          param: 0.3
+        - service: "ai-service"
+          type: probabilistic
+          param: 0.5
+        - service: "notification-service"
+          type: probabilistic
+          param: 0.2
+        - service: "billing-service"
+          type: probabilistic
+          param: 0.8
+
+  ui-config.json: |
+    {
+      "monitor": {
+        "menuEnabled": true
+      },
+      "dependencies": {
+        "menuEnabled": true
+      },
+      "archiveEnabled": true,
+      "tracking": {
+        "gaID": "UA-000000-2",
+        "trackErrors": true
+      },
+      "search": {
+        "maxLookback": {
+          "label": "2 Days",
+          "value": "2d"
+        }
+      },
+      "linkPatterns": [
+        {
+          "type": "process",
+          "key": "jaeger.version",
+          "url": "https://github.com/jaegertracing/jaeger/releases/tag/#{jaeger.version}",
+          "text": "Information about Jaeger release #{jaeger.version}"
+        }
+      ]
+    }
+
+  tags-mapping.properties: |
+    http.status_code=http_status_code
+    http.method=http_method
+    http.url=http_url
+    component=component
+    error=error
+    span.kind=span_kind
+    peer.service=peer_service
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: jaeger
+  namespace: istio-system
+  labels:
+    app: jaeger
+    app.kubernetes.io/name: jaeger
+    app.kubernetes.io/component: all-in-one
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: jaeger
+  template:
+    metadata:
+      labels:
+        app: jaeger
+        app.kubernetes.io/name: jaeger
+        app.kubernetes.io/component: all-in-one
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "16686"
+        sidecar.istio.io/inject: "false"
+    spec:
+      containers:
+      - name: jaeger
+        image: jaegertracing/all-in-one:1.51
+        args:
+        - --config-file=/etc/jaeger/jaeger.yaml
+        env:
+        - name: COLLECTOR_ZIPKIN_HOST_PORT
+          value: :9411
+        - name: COLLECTOR_OTLP_ENABLED
+          value: "true"
+        - name: METRICS_STORAGE_TYPE
+          value: prometheus
+        - name: PROMETHEUS_SERVER_URL
+          value: http://prometheus.istio-system:9090
+        - name: PROMETHEUS_QUERY_SUPPORT_SPANMETRICS_CONNECTOR
+          value: "true"
+        - name: PROMETHEUS_QUERY_NAMESPACE
+          value: span_metrics
+        - name: PROMETHEUS_QUERY_DURATION_UNIT
+          value: s
+        - name: PROMETHEUS_QUERY_NORMALIZE_CALLS
+          value: "true"
+        - name: PROMETHEUS_QUERY_NORMALIZE_DURATION
+          value: "true"
+        ports:
+        - containerPort: 5775
+          protocol: UDP
+        - containerPort: 6831
+          protocol: UDP
+        - containerPort: 6832
+          protocol: UDP
+        - containerPort: 5778
+          protocol: TCP
+        - containerPort: 16686
+          protocol: TCP
+        - containerPort: 9411
+          protocol: TCP
+        - containerPort: 4317
+          protocol: TCP
+        - containerPort: 4318
+          protocol: TCP
+        - containerPort: 14250
+          protocol: TCP
+        - containerPort: 14268
+          protocol: TCP
+        volumeMounts:
+        - name: jaeger-configuration-volume
+          mountPath: /etc/jaeger
+        resources:
+          requests:
+            cpu: 100m
+            memory: 128Mi
+          limits:
+            cpu: 500m
+            memory: 1Gi
+        livenessProbe:
+          httpGet:
+            path: /
+            port: 16686
+          initialDelaySeconds: 5
+          periodSeconds: 15
+        readinessProbe:
+          httpGet:
+            path: /
+            port: 16686
+          initialDelaySeconds: 5
+          periodSeconds: 10
+      volumes:
+      - name: jaeger-configuration-volume
+        configMap:
+          name: jaeger-configuration
+          items:
+          - key: jaeger.yaml
+            path: jaeger.yaml
+          - key: ui-config.json
+            path: ui-config.json
+          - key: tags-mapping.properties
+            path: tags-mapping.properties
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: jaeger-query
+  namespace: istio-system
+  labels:
+    app: jaeger
+    app.kubernetes.io/name: jaeger
+    app.kubernetes.io/component: query
+spec:
+  ports:
+  - name: query-http
+    port: 16686
+    protocol: TCP
+    targetPort: 16686
+  selector:
+    app: jaeger
+  type: ClusterIP
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: jaeger-collector
+  namespace: istio-system
+  labels:
+    app: jaeger
+    app.kubernetes.io/name: jaeger
+    app.kubernetes.io/component: collector
+spec:
+  ports:
+  - name: jaeger-collector-http
+    port: 14268
+    protocol: TCP
+    targetPort: 14268
+  - name: jaeger-collector-grpc
+    port: 14250
+    protocol: TCP
+    targetPort: 14250
+  - name: jaeger-collector-zipkin
+    port: 9411
+    protocol: TCP
+    targetPort: 9411
+  - name: otlp-grpc
+    port: 4317
+    protocol: TCP
+    targetPort: 4317
+  - name: otlp-http
+    port: 4318
+    protocol: TCP
+    targetPort: 4318
+  selector:
+    app: jaeger
+  type: ClusterIP
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: jaeger-agent
+  namespace: istio-system
+  labels:
+    app: jaeger
+    app.kubernetes.io/name: jaeger
+    app.kubernetes.io/component: agent
+spec:
+  ports:
+  - name: agent-zipkin-thrift
+    port: 5775
+    protocol: UDP
+    targetPort: 5775
+  - name: agent-compact
+    port: 6831
+    protocol: UDP
+    targetPort: 6831
+  - name: agent-binary
+    port: 6832
+    protocol: UDP
+    targetPort: 6832
+  - name: agent-configs
+    port: 5778
+    protocol: TCP
+    targetPort: 5778
+  clusterIP: None
+  selector:
+    app: jaeger
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: zipkin
+  namespace: istio-system
+  labels:
+    app: jaeger
+    app.kubernetes.io/name: jaeger
+    app.kubernetes.io/component: zipkin
+spec:
+  ports:
+  - name: jaeger-collector-zipkin
+    port: 9411
+    protocol: TCP
+    targetPort: 9411
+  selector:
+    app: jaeger
+
+---
+# Service monitor for Prometheus to scrape Jaeger metrics
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: jaeger
+  namespace: istio-system
+  labels:
+    app: jaeger
+spec:
+  selector:
+    matchLabels:
+      app: jaeger
+  endpoints:
+  - port: query-http
+    interval: 15s
+    path: /metrics
+
+---
+# Jaeger ingress for external access
+apiVersion: networking.istio.io/v1beta1
+kind: VirtualService
+metadata:
+  name: jaeger
+  namespace: istio-system
+spec:
+  hosts:
+  - jaeger.zoptal.com
+  gateways:
+  - zoptal-gateway
+  http:
+  - match:
+    - uri:
+        prefix: /
+    route:
+    - destination:
+        host: jaeger-query
+        port:
+          number: 16686
+    headers:
+      request:
+        add:
+          X-Forwarded-Proto: https
+      response:
+        add:
+          X-Content-Type-Options: nosniff
+          X-Frame-Options: DENY
+          X-XSS-Protection: "1; mode=block"
+
+---
+# Jaeger authorization policy
+apiVersion: security.istio.io/v1beta1
+kind: AuthorizationPolicy
+metadata:
+  name: jaeger-access
+  namespace: istio-system
+spec:
+  selector:
+    matchLabels:
+      app: jaeger
+  rules:
+  - from:
+    - source:
+        principals: ["cluster.local/ns/istio-system/sa/istio-ingressgateway-service-account"]
+  - from:
+    - source:
+        namespaces: ["zoptal-production", "zoptal-monitoring"]
+  - to:
+    - operation:
+        methods: ["GET", "POST"]

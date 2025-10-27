@@ -1,0 +1,359 @@
+# Kubernetes deployment configuration for Zoptal Auth Service
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: zoptal-auth
+  labels:
+    app: zoptal-auth-service
+    environment: production
+
+---
+# ConfigMap for environment variables
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: auth-service-config
+  namespace: zoptal-auth
+data:
+  NODE_ENV: "production"
+  PORT: "3001"
+  LOG_LEVEL: "info"
+  RATE_LIMIT_WINDOW_MS: "900000"
+  RATE_LIMIT_MAX_REQUESTS: "100"
+  SESSION_TIMEOUT_MINUTES: "60"
+  REFRESH_TOKEN_EXPIRY_DAYS: "7"
+  METRICS_ENABLED: "true"
+  HEALTH_CHECK_ENABLED: "true"
+  CORS_ORIGIN: "https://app.zoptal.com"
+  FRONTEND_URL: "https://app.zoptal.com"
+
+---
+# Secret for sensitive environment variables
+apiVersion: v1
+kind: Secret
+metadata:
+  name: auth-service-secrets
+  namespace: zoptal-auth
+type: Opaque
+stringData:
+  DATABASE_URL: "postgresql://username:password@postgres-service:5432/zoptal_auth"
+  REDIS_URL: "redis://redis-service:6379"
+  JWT_SECRET: "your-super-secure-jwt-secret-here"
+  REFRESH_JWT_SECRET: "your-super-secure-refresh-jwt-secret-here"
+  ENCRYPTION_KEY: "your-32-character-encryption-key-here"
+  SENDGRID_API_KEY: "your-sendgrid-api-key"
+  TWILIO_ACCOUNT_SID: "your-twilio-account-sid"
+  TWILIO_AUTH_TOKEN: "your-twilio-auth-token"
+  TWILIO_PHONE_NUMBER: "+1234567890"
+  GOOGLE_CLIENT_ID: "your-google-client-id"
+  GOOGLE_CLIENT_SECRET: "your-google-client-secret"
+  GITHUB_CLIENT_ID: "your-github-client-id"
+  GITHUB_CLIENT_SECRET: "your-github-client-secret"
+
+---
+# Auth Service Deployment
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: auth-service
+  namespace: zoptal-auth
+  labels:
+    app: auth-service
+    version: v1.0.0
+spec:
+  replicas: 3
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  selector:
+    matchLabels:
+      app: auth-service
+  template:
+    metadata:
+      labels:
+        app: auth-service
+        version: v1.0.0
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/path: "/metrics"
+        prometheus.io/port: "3001"
+    spec:
+      serviceAccountName: auth-service-sa
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1001
+        fsGroup: 1001
+      containers:
+      - name: auth-service
+        image: ghcr.io/zoptal/auth-service:latest
+        imagePullPolicy: Always
+        ports:
+        - containerPort: 3001
+          name: http
+          protocol: TCP
+        env:
+        - name: PORT
+          valueFrom:
+            configMapKeyRef:
+              name: auth-service-config
+              key: PORT
+        envFrom:
+        - configMapRef:
+            name: auth-service-config
+        - secretRef:
+            name: auth-service-secrets
+        resources:
+          requests:
+            memory: "512Mi"
+            cpu: "250m"
+          limits:
+            memory: "1Gi"
+            cpu: "500m"
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: http
+          initialDelaySeconds: 30
+          periodSeconds: 30
+          timeoutSeconds: 10
+          failureThreshold: 3
+        readinessProbe:
+          httpGet:
+            path: /ready
+            port: http
+          initialDelaySeconds: 15
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+        volumeMounts:
+        - name: avatar-storage
+          mountPath: /app/uploads
+        - name: temp-storage
+          mountPath: /tmp
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          runAsNonRoot: true
+          runAsUser: 1001
+          capabilities:
+            drop:
+            - ALL
+      volumes:
+      - name: avatar-storage
+        persistentVolumeClaim:
+          claimName: auth-service-storage
+      - name: temp-storage
+        emptyDir: {}
+      restartPolicy: Always
+      terminationGracePeriodSeconds: 30
+
+---
+# Service Account
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: auth-service-sa
+  namespace: zoptal-auth
+
+---
+# Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: auth-service
+  namespace: zoptal-auth
+  labels:
+    app: auth-service
+  annotations:
+    prometheus.io/scrape: "true"
+    prometheus.io/path: "/metrics"
+    prometheus.io/port: "3001"
+spec:
+  type: ClusterIP
+  ports:
+  - port: 80
+    targetPort: http
+    protocol: TCP
+    name: http
+  selector:
+    app: auth-service
+
+---
+# Horizontal Pod Autoscaler
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: auth-service-hpa
+  namespace: zoptal-auth
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: auth-service
+  minReplicas: 3
+  maxReplicas: 10
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 70
+  - type: Resource
+    resource:
+      name: memory
+      target:
+        type: Utilization
+        averageUtilization: 80
+  behavior:
+    scaleUp:
+      stabilizationWindowSeconds: 60
+      policies:
+      - type: Percent
+        value: 100
+        periodSeconds: 60
+    scaleDown:
+      stabilizationWindowSeconds: 300
+      policies:
+      - type: Percent
+        value: 10
+        periodSeconds: 60
+
+---
+# Persistent Volume Claim for avatar storage
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: auth-service-storage
+  namespace: zoptal-auth
+spec:
+  accessModes:
+    - ReadWriteMany
+  resources:
+    requests:
+      storage: 10Gi
+  storageClassName: fast-ssd
+
+---
+# Ingress
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: auth-service-ingress
+  namespace: zoptal-auth
+  annotations:
+    kubernetes.io/ingress.class: nginx
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+    nginx.ingress.kubernetes.io/rate-limit: "100"
+    nginx.ingress.kubernetes.io/rate-limit-window: "1m"
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/force-ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/proxy-body-size: "10m"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "120"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "120"
+    nginx.ingress.kubernetes.io/enable-cors: "true"
+    nginx.ingress.kubernetes.io/cors-allow-origin: "https://app.zoptal.com"
+    nginx.ingress.kubernetes.io/cors-allow-methods: "GET, POST, PUT, DELETE, OPTIONS"
+    nginx.ingress.kubernetes.io/cors-allow-headers: "DNT,Keep-Alive,User-Agent,X-Requested-With,If-Modified-Since,Cache-Control,Content-Type,Range,Authorization,X-API-Key"
+spec:
+  tls:
+  - hosts:
+    - auth-api.zoptal.com
+    secretName: auth-service-tls
+  rules:
+  - host: auth-api.zoptal.com
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: auth-service
+            port:
+              number: 80
+
+---
+# Network Policy
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: auth-service-netpol
+  namespace: zoptal-auth
+spec:
+  podSelector:
+    matchLabels:
+      app: auth-service
+  policyTypes:
+  - Ingress
+  - Egress
+  ingress:
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          name: ingress-nginx
+    - namespaceSelector:
+        matchLabels:
+          name: monitoring
+    - podSelector:
+        matchLabels:
+          app: auth-service
+    ports:
+    - protocol: TCP
+      port: 3001
+  egress:
+  - to:
+    - namespaceSelector:
+        matchLabels:
+          name: database
+    ports:
+    - protocol: TCP
+      port: 5432
+  - to:
+    - namespaceSelector:
+        matchLabels:
+          name: redis
+    ports:
+    - protocol: TCP
+      port: 6379
+  - to: []
+    ports:
+    - protocol: TCP
+      port: 443  # HTTPS for external APIs
+    - protocol: TCP
+      port: 80   # HTTP for external APIs
+    - protocol: UDP
+      port: 53   # DNS
+
+---
+# Pod Disruption Budget
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: auth-service-pdb
+  namespace: zoptal-auth
+spec:
+  minAvailable: 2
+  selector:
+    matchLabels:
+      app: auth-service
+
+---
+# Service Monitor for Prometheus
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: auth-service-monitor
+  namespace: zoptal-auth
+  labels:
+    app: auth-service
+spec:
+  selector:
+    matchLabels:
+      app: auth-service
+  endpoints:
+  - port: http
+    path: /metrics
+    interval: 30s
+    scrapeTimeout: 10s

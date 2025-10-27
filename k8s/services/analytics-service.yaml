@@ -1,0 +1,183 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: zoptal-analytics-service
+  namespace: zoptal
+  labels:
+    app: analytics-service
+    component: backend
+    service: analytics
+spec:
+  replicas: 2
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  selector:
+    matchLabels:
+      app: analytics-service
+  template:
+    metadata:
+      labels:
+        app: analytics-service
+        component: backend
+        service: analytics
+    spec:
+      containers:
+      - name: analytics-service
+        image: zoptal/analytics-service:latest
+        ports:
+        - containerPort: 4006
+          name: http
+        env:
+        - name: NODE_ENV
+          valueFrom:
+            configMapKeyRef:
+              name: zoptal-config
+              key: NODE_ENV
+        - name: PORT
+          value: "4006"
+        - name: DATABASE_URL
+          valueFrom:
+            secretKeyRef:
+              name: zoptal-secrets
+              key: DATABASE_URL
+        - name: CLICKHOUSE_URL
+          valueFrom:
+            secretKeyRef:
+              name: zoptal-secrets
+              key: CLICKHOUSE_URL
+        - name: CLICKHOUSE_DATABASE
+          valueFrom:
+            configMapKeyRef:
+              name: zoptal-config
+              key: CLICKHOUSE_DATABASE
+        - name: CLICKHOUSE_USER
+          valueFrom:
+            configMapKeyRef:
+              name: zoptal-config
+              key: CLICKHOUSE_USER
+        - name: CLICKHOUSE_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: zoptal-secrets
+              key: CLICKHOUSE_PASSWORD
+        - name: REDIS_URL
+          valueFrom:
+            secretKeyRef:
+              name: zoptal-secrets
+              key: REDIS_URL
+        - name: AUTH_SERVICE_URL
+          valueFrom:
+            configMapKeyRef:
+              name: zoptal-config
+              key: AUTH_SERVICE_URL
+        - name: JWT_SECRET
+          valueFrom:
+            secretKeyRef:
+              name: zoptal-secrets
+              key: JWT_SECRET
+        resources:
+          requests:
+            memory: "512Mi"
+            cpu: "500m"
+          limits:
+            memory: "1Gi"
+            cpu: "1000m"
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 4006
+          initialDelaySeconds: 30
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+        readinessProbe:
+          httpGet:
+            path: /health/ready
+            port: 4006
+          initialDelaySeconds: 10
+          periodSeconds: 5
+          timeoutSeconds: 3
+          failureThreshold: 3
+      initContainers:
+      - name: wait-for-auth-service
+        image: curlimages/curl:latest
+        command:
+        - sh
+        - -c
+        - |
+          until curl -f http://zoptal-auth-service:4001/health; do
+            echo "Waiting for Auth Service..."
+            sleep 5
+          done
+      - name: wait-for-clickhouse
+        image: curlimages/curl:latest
+        command:
+        - sh
+        - -c
+        - |
+          until curl -f http://zoptal-clickhouse:8123/ping; do
+            echo "Waiting for ClickHouse..."
+            sleep 5
+          done
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: zoptal-analytics-service
+  namespace: zoptal
+  labels:
+    app: analytics-service
+    component: backend
+    service: analytics
+spec:
+  ports:
+  - port: 4006
+    targetPort: 4006
+    protocol: TCP
+    name: http
+  selector:
+    app: analytics-service
+  type: ClusterIP
+
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: zoptal-analytics-service-hpa
+  namespace: zoptal
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: zoptal-analytics-service
+  minReplicas: 2
+  maxReplicas: 6
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 70
+  - type: Resource
+    resource:
+      name: memory
+      target:
+        type: Utilization
+        averageUtilization: 80
+
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: zoptal-analytics-service-pdb
+  namespace: zoptal
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: analytics-service

@@ -1,0 +1,1207 @@
+openapi: 3.0.3
+info:
+  title: Zoptal Platform API
+  description: |
+    Comprehensive API documentation for the Zoptal microservices platform.
+    
+    This API provides access to all Zoptal services including authentication,
+    project management, AI services, billing, notifications, and analytics.
+    
+    ## Authentication
+    Most endpoints require authentication using JWT tokens. Include the token in the Authorization header:
+    ```
+    Authorization: Bearer <your-jwt-token>
+    ```
+    
+    ## Rate Limiting
+    API requests are rate limited to prevent abuse. Rate limits are applied per user/IP address.
+    
+    ## Error Handling
+    All errors follow a consistent format with appropriate HTTP status codes.
+    
+  version: 1.0.0
+  contact:
+    name: Zoptal API Support
+    email: api-support@zoptal.com
+    url: https://docs.zoptal.com
+  license:
+    name: MIT
+    url: https://opensource.org/licenses/MIT
+  termsOfService: https://zoptal.com/terms
+
+servers:
+  - url: https://api.zoptal.com
+    description: Production server
+  - url: https://staging-api.zoptal.com
+    description: Staging server
+  - url: http://localhost:4000
+    description: Local development server
+
+security:
+  - BearerAuth: []
+  - ApiKeyAuth: []
+
+tags:
+  - name: Authentication
+    description: User authentication and authorization
+  - name: Users
+    description: User management operations
+  - name: Projects
+    description: Project management
+  - name: AI Services
+    description: AI-powered features and integrations
+  - name: Billing
+    description: Billing and subscription management
+  - name: Notifications
+    description: Email, SMS, and push notifications
+  - name: Analytics
+    description: User analytics and metrics
+  - name: Admin
+    description: Administrative operations
+
+paths:
+  # Authentication Service
+  /auth/register:
+    post:
+      tags:
+        - Authentication
+      summary: Register a new user
+      description: Create a new user account with email and password
+      operationId: registerUser
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RegisterRequest'
+            examples:
+              basic:
+                summary: Basic registration
+                value:
+                  email: user@example.com
+                  password: SecurePassword123!
+                  firstName: John
+                  lastName: Doe
+      responses:
+        '201':
+          description: User registered successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/ValidationError'
+        '500':
+          $ref: '#/components/responses/ServerError'
+
+  /auth/login:
+    post:
+      tags:
+        - Authentication
+      summary: User login
+      description: Authenticate user with email and password
+      operationId: loginUser
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LoginRequest'
+            examples:
+              basic:
+                summary: Basic login
+                value:
+                  email: user@example.com
+                  password: SecurePassword123!
+      responses:
+        '200':
+          description: Login successful
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '422':
+          $ref: '#/components/responses/ValidationError'
+        '500':
+          $ref: '#/components/responses/ServerError'
+
+  /auth/refresh:
+    post:
+      tags:
+        - Authentication
+      summary: Refresh access token
+      description: Get a new access token using refresh token
+      operationId: refreshToken
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RefreshRequest'
+      responses:
+        '200':
+          description: Token refreshed successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TokenResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/ServerError'
+
+  /auth/logout:
+    post:
+      tags:
+        - Authentication
+      summary: User logout
+      description: Invalidate current session and tokens
+      operationId: logoutUser
+      security:
+        - BearerAuth: []
+      responses:
+        '200':
+          description: Logout successful
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MessageResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/ServerError'
+
+  # User Management
+  /users/profile:
+    get:
+      tags:
+        - Users
+      summary: Get user profile
+      description: Get current user's profile information
+      operationId: getUserProfile
+      security:
+        - BearerAuth: []
+      responses:
+        '200':
+          description: User profile retrieved successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserProfile'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/ServerError'
+
+    put:
+      tags:
+        - Users
+      summary: Update user profile
+      description: Update current user's profile information
+      operationId: updateUserProfile
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateProfileRequest'
+      responses:
+        '200':
+          description: Profile updated successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserProfile'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '422':
+          $ref: '#/components/responses/ValidationError'
+        '500':
+          $ref: '#/components/responses/ServerError'
+
+  # Project Management
+  /projects:
+    get:
+      tags:
+        - Projects
+      summary: List user projects
+      description: Get a list of projects for the authenticated user
+      operationId: listProjects
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: page
+          in: query
+          description: Page number for pagination
+          schema:
+            type: integer
+            minimum: 1
+            default: 1
+        - name: limit
+          in: query
+          description: Number of items per page
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 20
+        - name: status
+          in: query
+          description: Filter by project status
+          schema:
+            type: string
+            enum: [active, archived, completed]
+      responses:
+        '200':
+          description: Projects retrieved successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProjectListResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/ServerError'
+
+    post:
+      tags:
+        - Projects
+      summary: Create new project
+      description: Create a new project for the authenticated user
+      operationId: createProject
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateProjectRequest'
+      responses:
+        '201':
+          description: Project created successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Project'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '422':
+          $ref: '#/components/responses/ValidationError'
+        '500':
+          $ref: '#/components/responses/ServerError'
+
+  /projects/{projectId}:
+    get:
+      tags:
+        - Projects
+      summary: Get project details
+      description: Get detailed information about a specific project
+      operationId: getProject
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: projectId
+          in: path
+          required: true
+          description: Project ID
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Project retrieved successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Project'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/ServerError'
+
+    put:
+      tags:
+        - Projects
+      summary: Update project
+      description: Update project information
+      operationId: updateProject
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: projectId
+          in: path
+          required: true
+          description: Project ID
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateProjectRequest'
+      responses:
+        '200':
+          description: Project updated successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Project'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/ValidationError'
+        '500':
+          $ref: '#/components/responses/ServerError'
+
+    delete:
+      tags:
+        - Projects
+      summary: Delete project
+      description: Delete a project (soft delete)
+      operationId: deleteProject
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: projectId
+          in: path
+          required: true
+          description: Project ID
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Project deleted successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MessageResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/ServerError'
+
+  # AI Services
+  /ai/completions:
+    post:
+      tags:
+        - AI Services
+      summary: Generate AI completion
+      description: Generate text completion using various AI models
+      operationId: generateCompletion
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CompletionRequest'
+      responses:
+        '200':
+          description: Completion generated successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CompletionResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '402':
+          $ref: '#/components/responses/PaymentRequired'
+        '422':
+          $ref: '#/components/responses/ValidationError'
+        '500':
+          $ref: '#/components/responses/ServerError'
+
+  /ai/chat:
+    post:
+      tags:
+        - AI Services
+      summary: Chat with AI
+      description: Have a conversation with AI models
+      operationId: chatWithAI
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ChatRequest'
+      responses:
+        '200':
+          description: Chat response generated successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ChatResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '402':
+          $ref: '#/components/responses/PaymentRequired'
+        '422':
+          $ref: '#/components/responses/ValidationError'
+        '500':
+          $ref: '#/components/responses/ServerError'
+
+  # Billing
+  /billing/subscription:
+    get:
+      tags:
+        - Billing
+      summary: Get subscription details
+      description: Get current subscription information
+      operationId: getSubscription
+      security:
+        - BearerAuth: []
+      responses:
+        '200':
+          description: Subscription retrieved successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Subscription'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/ServerError'
+
+  /billing/usage:
+    get:
+      tags:
+        - Billing
+      summary: Get usage statistics
+      description: Get current billing period usage statistics
+      operationId: getUsage
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: period
+          in: query
+          description: Billing period
+          schema:
+            type: string
+            enum: [current, previous]
+            default: current
+      responses:
+        '200':
+          description: Usage statistics retrieved successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UsageResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/ServerError'
+
+components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: JWT token obtained from /auth/login
+    ApiKeyAuth:
+      type: apiKey
+      in: header
+      name: X-API-Key
+      description: API key for service-to-service communication
+
+  schemas:
+    # Authentication Schemas
+    RegisterRequest:
+      type: object
+      required:
+        - email
+        - password
+        - firstName
+        - lastName
+      properties:
+        email:
+          type: string
+          format: email
+          description: User's email address
+        password:
+          type: string
+          minLength: 8
+          description: Password (minimum 8 characters)
+        firstName:
+          type: string
+          minLength: 1
+          description: User's first name
+        lastName:
+          type: string
+          minLength: 1
+          description: User's last name
+        phone:
+          type: string
+          description: Optional phone number
+        acceptTerms:
+          type: boolean
+          description: User acceptance of terms and conditions
+
+    LoginRequest:
+      type: object
+      required:
+        - email
+        - password
+      properties:
+        email:
+          type: string
+          format: email
+        password:
+          type: string
+        rememberMe:
+          type: boolean
+          default: false
+
+    RefreshRequest:
+      type: object
+      required:
+        - refreshToken
+      properties:
+        refreshToken:
+          type: string
+          description: Valid refresh token
+
+    AuthResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+        message:
+          type: string
+        data:
+          type: object
+          properties:
+            user:
+              $ref: '#/components/schemas/UserProfile'
+            tokens:
+              $ref: '#/components/schemas/TokenResponse'
+
+    TokenResponse:
+      type: object
+      properties:
+        accessToken:
+          type: string
+          description: JWT access token
+        refreshToken:
+          type: string
+          description: JWT refresh token
+        expiresIn:
+          type: integer
+          description: Access token expiration time in seconds
+        tokenType:
+          type: string
+          enum: [Bearer]
+          default: Bearer
+
+    # User Schemas
+    UserProfile:
+      type: object
+      properties:
+        id:
+          type: string
+          description: User ID
+        email:
+          type: string
+          format: email
+        firstName:
+          type: string
+        lastName:
+          type: string
+        phone:
+          type: string
+        avatar:
+          type: string
+          format: uri
+          description: URL to user's avatar image
+        role:
+          type: string
+          enum: [user, admin, developer]
+          default: user
+        status:
+          type: string
+          enum: [active, inactive, suspended]
+          default: active
+        emailVerified:
+          type: boolean
+          default: false
+        phoneVerified:
+          type: boolean
+          default: false
+        twoFactorEnabled:
+          type: boolean
+          default: false
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+
+    UpdateProfileRequest:
+      type: object
+      properties:
+        firstName:
+          type: string
+        lastName:
+          type: string
+        phone:
+          type: string
+        avatar:
+          type: string
+          format: uri
+
+    # Project Schemas
+    Project:
+      type: object
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        description:
+          type: string
+        status:
+          type: string
+          enum: [active, archived, completed]
+          default: active
+        visibility:
+          type: string
+          enum: [private, public, team]
+          default: private
+        owner:
+          $ref: '#/components/schemas/UserProfile'
+        members:
+          type: array
+          items:
+            $ref: '#/components/schemas/ProjectMember'
+        settings:
+          $ref: '#/components/schemas/ProjectSettings'
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+
+    ProjectMember:
+      type: object
+      properties:
+        user:
+          $ref: '#/components/schemas/UserProfile'
+        role:
+          type: string
+          enum: [owner, admin, member, viewer]
+        permissions:
+          type: array
+          items:
+            type: string
+        joinedAt:
+          type: string
+          format: date-time
+
+    ProjectSettings:
+      type: object
+      properties:
+        enableNotifications:
+          type: boolean
+          default: true
+        enableAnalytics:
+          type: boolean
+          default: true
+        defaultAIModel:
+          type: string
+        apiRateLimit:
+          type: integer
+          minimum: 100
+          maximum: 10000
+          default: 1000
+
+    CreateProjectRequest:
+      type: object
+      required:
+        - name
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 100
+        description:
+          type: string
+          maxLength: 500
+        visibility:
+          type: string
+          enum: [private, public, team]
+          default: private
+        settings:
+          $ref: '#/components/schemas/ProjectSettings'
+
+    UpdateProjectRequest:
+      type: object
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 100
+        description:
+          type: string
+          maxLength: 500
+        status:
+          type: string
+          enum: [active, archived, completed]
+        visibility:
+          type: string
+          enum: [private, public, team]
+        settings:
+          $ref: '#/components/schemas/ProjectSettings'
+
+    ProjectListResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+        data:
+          type: object
+          properties:
+            projects:
+              type: array
+              items:
+                $ref: '#/components/schemas/Project'
+            pagination:
+              $ref: '#/components/schemas/PaginationInfo'
+
+    # AI Service Schemas
+    CompletionRequest:
+      type: object
+      required:
+        - prompt
+      properties:
+        prompt:
+          type: string
+          description: The input prompt for completion
+        model:
+          type: string
+          enum: [openai-gpt4, openai-gpt3.5, anthropic-claude, google-gemini]
+          default: openai-gpt4
+        maxTokens:
+          type: integer
+          minimum: 1
+          maximum: 4000
+          default: 1000
+        temperature:
+          type: number
+          minimum: 0
+          maximum: 2
+          default: 0.7
+        stream:
+          type: boolean
+          default: false
+
+    CompletionResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+        data:
+          type: object
+          properties:
+            completion:
+              type: string
+            model:
+              type: string
+            usage:
+              $ref: '#/components/schemas/AIUsage'
+            id:
+              type: string
+
+    ChatRequest:
+      type: object
+      required:
+        - messages
+      properties:
+        messages:
+          type: array
+          items:
+            $ref: '#/components/schemas/ChatMessage'
+        model:
+          type: string
+          enum: [openai-gpt4, openai-gpt3.5, anthropic-claude, google-gemini]
+          default: openai-gpt4
+        maxTokens:
+          type: integer
+          minimum: 1
+          maximum: 4000
+          default: 1000
+        temperature:
+          type: number
+          minimum: 0
+          maximum: 2
+          default: 0.7
+        stream:
+          type: boolean
+          default: false
+
+    ChatMessage:
+      type: object
+      required:
+        - role
+        - content
+      properties:
+        role:
+          type: string
+          enum: [system, user, assistant]
+        content:
+          type: string
+        name:
+          type: string
+          description: Optional name for the message sender
+
+    ChatResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+        data:
+          type: object
+          properties:
+            message:
+              $ref: '#/components/schemas/ChatMessage'
+            model:
+              type: string
+            usage:
+              $ref: '#/components/schemas/AIUsage'
+            id:
+              type: string
+
+    AIUsage:
+      type: object
+      properties:
+        promptTokens:
+          type: integer
+        completionTokens:
+          type: integer
+        totalTokens:
+          type: integer
+        cost:
+          type: number
+          format: float
+
+    # Billing Schemas
+    Subscription:
+      type: object
+      properties:
+        id:
+          type: string
+        status:
+          type: string
+          enum: [active, canceled, past_due, unpaid]
+        plan:
+          $ref: '#/components/schemas/SubscriptionPlan'
+        currentPeriodStart:
+          type: string
+          format: date-time
+        currentPeriodEnd:
+          type: string
+          format: date-time
+        cancelAtPeriodEnd:
+          type: boolean
+        trialEnd:
+          type: string
+          format: date-time
+        customer:
+          type: string
+          description: Stripe customer ID
+        createdAt:
+          type: string
+          format: date-time
+
+    SubscriptionPlan:
+      type: object
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        description:
+          type: string
+        price:
+          type: number
+          format: float
+        currency:
+          type: string
+          default: usd
+        interval:
+          type: string
+          enum: [month, year]
+        features:
+          type: array
+          items:
+            type: string
+        limits:
+          $ref: '#/components/schemas/PlanLimits'
+
+    PlanLimits:
+      type: object
+      properties:
+        apiCalls:
+          type: integer
+          description: API calls per month
+        aiTokens:
+          type: integer
+          description: AI tokens per month
+        projects:
+          type: integer
+          description: Maximum number of projects
+        teamMembers:
+          type: integer
+          description: Maximum team members
+        storage:
+          type: integer
+          description: Storage in GB
+
+    UsageResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+        data:
+          type: object
+          properties:
+            period:
+              type: object
+              properties:
+                start:
+                  type: string
+                  format: date-time
+                end:
+                  type: string
+                  format: date-time
+            usage:
+              type: object
+              properties:
+                apiCalls:
+                  type: integer
+                aiTokens:
+                  type: integer
+                storage:
+                  type: integer
+            limits:
+              $ref: '#/components/schemas/PlanLimits'
+
+    # Common Schemas
+    MessageResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+        message:
+          type: string
+
+    ErrorResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+          default: false
+        error:
+          type: object
+          properties:
+            code:
+              type: string
+            message:
+              type: string
+            details:
+              type: string
+            field:
+              type: string
+              description: Field name for validation errors
+
+    ValidationErrorResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+          default: false
+        error:
+          type: object
+          properties:
+            code:
+              type: string
+              default: VALIDATION_ERROR
+            message:
+              type: string
+            errors:
+              type: array
+              items:
+                type: object
+                properties:
+                  field:
+                    type: string
+                  message:
+                    type: string
+                  code:
+                    type: string
+
+    PaginationInfo:
+      type: object
+      properties:
+        page:
+          type: integer
+          minimum: 1
+        limit:
+          type: integer
+          minimum: 1
+        total:
+          type: integer
+          minimum: 0
+        totalPages:
+          type: integer
+          minimum: 0
+        hasNext:
+          type: boolean
+        hasPrev:
+          type: boolean
+
+  responses:
+    BadRequest:
+      description: Bad request - Invalid input parameters
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            success: false
+            error:
+              code: BAD_REQUEST
+              message: Invalid request parameters
+
+    Unauthorized:
+      description: Unauthorized - Authentication required or invalid
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            success: false
+            error:
+              code: UNAUTHORIZED
+              message: Authentication required
+
+    PaymentRequired:
+      description: Payment required - Insufficient credits or subscription needed
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            success: false
+            error:
+              code: PAYMENT_REQUIRED
+              message: Insufficient credits. Please upgrade your plan.
+
+    Forbidden:
+      description: Forbidden - Insufficient permissions
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            success: false
+            error:
+              code: FORBIDDEN
+              message: Insufficient permissions to access this resource
+
+    NotFound:
+      description: Not found - Resource does not exist
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            success: false
+            error:
+              code: NOT_FOUND
+              message: Resource not found
+
+    Conflict:
+      description: Conflict - Resource already exists
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            success: false
+            error:
+              code: CONFLICT
+              message: Resource already exists
+
+    ValidationError:
+      description: Validation error - Invalid input data
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ValidationErrorResponse'
+          example:
+            success: false
+            error:
+              code: VALIDATION_ERROR
+              message: Validation failed
+              errors:
+                - field: email
+                  message: Invalid email format
+                  code: INVALID_EMAIL
+
+    TooManyRequests:
+      description: Too many requests - Rate limit exceeded
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            success: false
+            error:
+              code: RATE_LIMIT_EXCEEDED
+              message: Too many requests. Please try again later.
+
+    ServerError:
+      description: Internal server error
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            success: false
+            error:
+              code: INTERNAL_ERROR
+              message: An unexpected error occurred

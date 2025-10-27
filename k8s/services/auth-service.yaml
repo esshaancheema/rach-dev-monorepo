@@ -1,0 +1,238 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: zoptal-auth-service
+  namespace: zoptal
+  labels:
+    app: auth-service
+    component: backend
+    service: auth
+spec:
+  replicas: 3
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  selector:
+    matchLabels:
+      app: auth-service
+  template:
+    metadata:
+      labels:
+        app: auth-service
+        component: backend
+        service: auth
+    spec:
+      containers:
+      - name: auth-service
+        image: zoptal/auth-service:latest
+        ports:
+        - containerPort: 4001
+          name: http
+        env:
+        - name: NODE_ENV
+          valueFrom:
+            configMapKeyRef:
+              name: zoptal-config
+              key: NODE_ENV
+        - name: PORT
+          value: "4001"
+        - name: DATABASE_URL
+          valueFrom:
+            secretKeyRef:
+              name: zoptal-secrets
+              key: DATABASE_URL
+        - name: REDIS_URL
+          valueFrom:
+            secretKeyRef:
+              name: zoptal-secrets
+              key: REDIS_URL
+        - name: JWT_SECRET
+          valueFrom:
+            secretKeyRef:
+              name: zoptal-secrets
+              key: JWT_SECRET
+        - name: JWT_REFRESH_SECRET
+          valueFrom:
+            secretKeyRef:
+              name: zoptal-secrets
+              key: JWT_REFRESH_SECRET
+        - name: BCRYPT_ROUNDS
+          valueFrom:
+            configMapKeyRef:
+              name: zoptal-config
+              key: BCRYPT_ROUNDS
+        - name: EMAIL_FROM
+          valueFrom:
+            configMapKeyRef:
+              name: zoptal-config
+              key: EMAIL_FROM
+        - name: SENDGRID_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: zoptal-secrets
+              key: SENDGRID_API_KEY
+        - name: TWILIO_ACCOUNT_SID
+          valueFrom:
+            secretKeyRef:
+              name: zoptal-secrets
+              key: TWILIO_ACCOUNT_SID
+        - name: TWILIO_AUTH_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: zoptal-secrets
+              key: TWILIO_AUTH_TOKEN
+        - name: TWILIO_PHONE_NUMBER
+          valueFrom:
+            secretKeyRef:
+              name: zoptal-secrets
+              key: TWILIO_PHONE_NUMBER
+        - name: GOOGLE_CLIENT_ID
+          valueFrom:
+            secretKeyRef:
+              name: zoptal-secrets
+              key: GOOGLE_CLIENT_ID
+        - name: GOOGLE_CLIENT_SECRET
+          valueFrom:
+            secretKeyRef:
+              name: zoptal-secrets
+              key: GOOGLE_CLIENT_SECRET
+        - name: GITHUB_CLIENT_ID
+          valueFrom:
+            secretKeyRef:
+              name: zoptal-secrets
+              key: GITHUB_CLIENT_ID
+        - name: GITHUB_CLIENT_SECRET
+          valueFrom:
+            secretKeyRef:
+              name: zoptal-secrets
+              key: GITHUB_CLIENT_SECRET
+        resources:
+          requests:
+            memory: "256Mi"
+            cpu: "250m"
+          limits:
+            memory: "512Mi"
+            cpu: "500m"
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 4001
+          initialDelaySeconds: 30
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+        readinessProbe:
+          httpGet:
+            path: /health/ready
+            port: 4001
+          initialDelaySeconds: 10
+          periodSeconds: 5
+          timeoutSeconds: 3
+          failureThreshold: 3
+        startupProbe:
+          httpGet:
+            path: /health
+            port: 4001
+          initialDelaySeconds: 10
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 30
+      initContainers:
+      - name: wait-for-postgres
+        image: postgres:15-alpine
+        command:
+        - sh
+        - -c
+        - |
+          until pg_isready -h zoptal-postgres -p 5432 -U postgres; do
+            echo "Waiting for PostgreSQL..."
+            sleep 2
+          done
+      - name: wait-for-redis
+        image: redis:7-alpine
+        command:
+        - sh
+        - -c
+        - |
+          until redis-cli -h zoptal-redis ping; do
+            echo "Waiting for Redis..."
+            sleep 2
+          done
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: zoptal-auth-service
+  namespace: zoptal
+  labels:
+    app: auth-service
+    component: backend
+    service: auth
+spec:
+  ports:
+  - port: 4001
+    targetPort: 4001
+    protocol: TCP
+    name: http
+  selector:
+    app: auth-service
+  type: ClusterIP
+
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: zoptal-auth-service-hpa
+  namespace: zoptal
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: zoptal-auth-service
+  minReplicas: 3
+  maxReplicas: 10
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 70
+  - type: Resource
+    resource:
+      name: memory
+      target:
+        type: Utilization
+        averageUtilization: 80
+  behavior:
+    scaleDown:
+      stabilizationWindowSeconds: 300
+      policies:
+      - type: Percent
+        value: 10
+        periodSeconds: 60
+    scaleUp:
+      stabilizationWindowSeconds: 0
+      policies:
+      - type: Percent
+        value: 100
+        periodSeconds: 15
+      - type: Pods
+        value: 4
+        periodSeconds: 15
+      selectPolicy: Max
+
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: zoptal-auth-service-pdb
+  namespace: zoptal
+spec:
+  minAvailable: 2
+  selector:
+    matchLabels:
+      app: auth-service

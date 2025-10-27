@@ -1,0 +1,336 @@
+name: Canary Deployment
+
+on:
+  workflow_dispatch:
+    inputs:
+      service:
+        description: 'Service to deploy'
+        required: true
+        type: choice
+        options:
+          - auth-service
+          - project-service
+          - ai-service
+          - file-service
+          - notification-service
+          - billing-service
+          - security-service
+      version:
+        description: 'Version to deploy (e.g., v1.2.0)'
+        required: true
+        type: string
+      initial_percentage:
+        description: 'Initial canary traffic percentage'
+        required: false
+        type: number
+        default: 10
+      increment:
+        description: 'Traffic increment percentage'
+        required: false
+        type: number
+        default: 20
+      auto_promote:
+        description: 'Enable automatic promotion'
+        required: false
+        type: boolean
+        default: false
+      success_threshold:
+        description: 'Success rate threshold (%)'
+        required: false
+        type: number
+        default: 99.0
+      error_threshold:
+        description: 'Error rate threshold (%)'
+        required: false
+        type: number
+        default: 1.0
+      latency_threshold:
+        description: 'P95 latency threshold (ms)'
+        required: false
+        type: number
+        default: 500
+
+jobs:
+  validate-inputs:
+    name: Validate Inputs
+    runs-on: ubuntu-latest
+    outputs:
+      service: ${{ steps.validate.outputs.service }}
+      version: ${{ steps.validate.outputs.version }}
+    steps:
+      - name: Validate inputs
+        id: validate
+        run: |
+          # Validate service name
+          if [[ ! "${{ github.event.inputs.service }}" =~ ^[a-z-]+$ ]]; then
+            echo "Invalid service name"
+            exit 1
+          fi
+          
+          # Validate version format
+          if [[ ! "${{ github.event.inputs.version }}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Invalid version format. Use vX.Y.Z"
+            exit 1
+          fi
+          
+          # Validate percentages
+          if [[ ${{ github.event.inputs.initial_percentage }} -lt 1 || ${{ github.event.inputs.initial_percentage }} -gt 50 ]]; then
+            echo "Initial percentage must be between 1 and 50"
+            exit 1
+          fi
+          
+          echo "service=${{ github.event.inputs.service }}" >> $GITHUB_OUTPUT
+          echo "version=${{ github.event.inputs.version }}" >> $GITHUB_OUTPUT
+
+  build-and-push:
+    name: Build and Push Docker Image
+    runs-on: ubuntu-latest
+    needs: validate-inputs
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_PASSWORD }}
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: ./services/${{ github.event.inputs.service }}
+          push: true
+          tags: |
+            zoptal/${{ github.event.inputs.service }}:${{ github.event.inputs.version }}
+            zoptal/${{ github.event.inputs.service }}:latest-canary
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  start-canary:
+    name: Start Canary Deployment
+    runs-on: ubuntu-latest
+    needs: [validate-inputs, build-and-push]
+    environment: production
+    outputs:
+      canary_id: ${{ steps.start.outputs.canary_id }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure kubectl
+        uses: azure/setup-kubectl@v3
+        with:
+          version: 'v1.28.0'
+
+      - name: Configure Kubernetes context
+        env:
+          KUBE_CONFIG: ${{ secrets.KUBE_CONFIG }}
+        run: |
+          echo "$KUBE_CONFIG" | base64 -d > ${HOME}/.kube/config
+          chmod 600 ${HOME}/.kube/config
+
+      - name: Start canary deployment
+        id: start
+        env:
+          SERVICE_NAME: ${{ github.event.inputs.service }}
+          VERSION: ${{ github.event.inputs.version }}
+          INITIAL_PERCENTAGE: ${{ github.event.inputs.initial_percentage }}
+          INCREMENT: ${{ github.event.inputs.increment }}
+          AUTO_PROMOTE: ${{ github.event.inputs.auto_promote }}
+          SUCCESS_THRESHOLD: ${{ github.event.inputs.success_threshold }}
+          ERROR_THRESHOLD: ${{ github.event.inputs.error_threshold }}
+          LATENCY_THRESHOLD: ${{ github.event.inputs.latency_threshold }}
+        run: |
+          echo "Starting canary deployment..."
+          
+          # Start canary via API
+          CANARY_RESPONSE=$(curl -X POST http://canary-controller.zoptal-production:8090/canaries \
+            -H "Content-Type: application/json" \
+            -d "{
+              \"service\": \"$SERVICE_NAME\",
+              \"version\": \"$VERSION\",
+              \"initialPercentage\": $INITIAL_PERCENTAGE,
+              \"increment\": $INCREMENT,
+              \"autoPromote\": $AUTO_PROMOTE,
+              \"thresholds\": {
+                \"successRate\": $SUCCESS_THRESHOLD,
+                \"errorRate\": $ERROR_THRESHOLD,
+                \"latency\": $LATENCY_THRESHOLD
+              }
+            }")
+          
+          CANARY_ID=$(echo "$CANARY_RESPONSE" | jq -r '.data.id')
+          
+          if [[ "$CANARY_ID" == "null" ]]; then
+            echo "Failed to start canary deployment"
+            echo "$CANARY_RESPONSE"
+            exit 1
+          fi
+          
+          echo "Canary started with ID: $CANARY_ID"
+          echo "canary_id=$CANARY_ID" >> $GITHUB_OUTPUT
+
+      - name: Wait for initial deployment
+        env:
+          CANARY_ID: ${{ steps.start.outputs.canary_id }}
+        run: |
+          echo "Waiting for canary deployment to be ready..."
+          
+          for i in {1..30}; do
+            STATUS=$(curl -s http://canary-controller.zoptal-production:8090/canaries/$CANARY_ID | \
+              jq -r '.data.status')
+            
+            echo "Canary status: $STATUS"
+            
+            if [[ "$STATUS" == "analyzing" ]]; then
+              echo "✅ Canary deployment is ready and analyzing"
+              break
+            elif [[ "$STATUS" == "failed" ]]; then
+              echo "❌ Canary deployment failed"
+              exit 1
+            fi
+            
+            sleep 10
+          done
+
+  monitor-canary:
+    name: Monitor Canary
+    runs-on: ubuntu-latest
+    needs: start-canary
+    if: github.event.inputs.auto_promote != 'true'
+    steps:
+      - name: Monitor canary progress
+        env:
+          CANARY_ID: ${{ needs.start-canary.outputs.canary_id }}
+        run: |
+          echo "Monitoring canary deployment..."
+          
+          # Monitor for 30 minutes
+          for i in {1..180}; do
+            CANARY_INFO=$(curl -s http://canary-controller.zoptal-production:8090/canaries/$CANARY_ID)
+            STATUS=$(echo "$CANARY_INFO" | jq -r '.data.status')
+            PERCENTAGE=$(echo "$CANARY_INFO" | jq -r '.data.currentPercentage')
+            
+            echo "[$i/180] Status: $STATUS, Traffic: $PERCENTAGE%"
+            
+            if [[ "$STATUS" == "promoted" ]]; then
+              echo "✅ Canary successfully promoted to stable"
+              break
+            elif [[ "$STATUS" == "rolled_back" ]]; then
+              echo "❌ Canary was rolled back"
+              exit 1
+            fi
+            
+            # Show recent metrics if available
+            METRICS=$(curl -s http://canary-controller.zoptal-production:8090/canaries/$CANARY_ID/metrics | \
+              jq -r '.data.current | "Success: \(.successRate | tostring)%, Errors: \(.errorRate | tostring)%, P95: \(.latencyP95 | tostring)ms"')
+            echo "  Metrics: $METRICS"
+            
+            sleep 10
+          done
+
+  post-deployment:
+    name: Post-deployment Tasks
+    runs-on: ubuntu-latest
+    needs: [start-canary, monitor-canary]
+    if: always()
+    steps:
+      - name: Get final canary status
+        env:
+          CANARY_ID: ${{ needs.start-canary.outputs.canary_id }}
+        run: |
+          if [[ -n "$CANARY_ID" ]]; then
+            FINAL_STATUS=$(curl -s http://canary-controller.zoptal-production:8090/canaries/$CANARY_ID | \
+              jq -r '.data.status')
+            echo "Final canary status: $FINAL_STATUS"
+            echo "FINAL_STATUS=$FINAL_STATUS" >> $GITHUB_ENV
+          fi
+
+      - name: Send notification
+        if: always()
+        env:
+          SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK }}
+          SERVICE_NAME: ${{ github.event.inputs.service }}
+          VERSION: ${{ github.event.inputs.version }}
+          STATUS: ${{ env.FINAL_STATUS || 'unknown' }}
+          AUTO_PROMOTE: ${{ github.event.inputs.auto_promote }}
+        run: |
+          if [[ "$STATUS" == "promoted" ]]; then
+            MESSAGE="✅ Canary deployment successful: $SERVICE_NAME:$VERSION promoted to stable"
+            COLOR="good"
+          elif [[ "$STATUS" == "analyzing" ]]; then
+            MESSAGE="🔄 Canary deployment in progress: $SERVICE_NAME:$VERSION"
+            COLOR="warning"
+          elif [[ "$STATUS" == "rolled_back" ]]; then
+            MESSAGE="❌ Canary deployment rolled back: $SERVICE_NAME:$VERSION"
+            COLOR="danger"
+          else
+            MESSAGE="❓ Canary deployment status unknown: $SERVICE_NAME:$VERSION"
+            COLOR="warning"
+          fi
+          
+          curl -X POST $SLACK_WEBHOOK \
+            -H 'Content-Type: application/json' \
+            -d "{
+              \"attachments\": [{
+                \"color\": \"$COLOR\",
+                \"title\": \"Canary Deployment\",
+                \"text\": \"$MESSAGE\",
+                \"fields\": [
+                  {\"title\": \"Service\", \"value\": \"$SERVICE_NAME\", \"short\": true},
+                  {\"title\": \"Version\", \"value\": \"$VERSION\", \"short\": true},
+                  {\"title\": \"Auto-promote\", \"value\": \"$AUTO_PROMOTE\", \"short\": true},
+                  {\"title\": \"Triggered by\", \"value\": \"${{ github.actor }}\", \"short\": true}
+                ]
+              }]
+            }" || true
+
+  manual-promotion:
+    name: Manual Promotion (if needed)
+    runs-on: ubuntu-latest
+    needs: [start-canary, monitor-canary]
+    if: github.event.inputs.auto_promote != 'true'
+    environment: production-manual
+    steps:
+      - name: Manual promotion approval
+        run: |
+          echo "Manual promotion step - requires approval"
+          echo "Review the canary metrics and approve to promote to stable"
+
+      - name: Promote canary to stable
+        env:
+          CANARY_ID: ${{ needs.start-canary.outputs.canary_id }}
+        run: |
+          echo "Promoting canary to stable..."
+          
+          RESPONSE=$(curl -X POST http://canary-controller.zoptal-production:8090/canaries/$CANARY_ID/promote)
+          
+          if echo "$RESPONSE" | jq -e '.success' > /dev/null; then
+            echo "✅ Canary promoted to stable successfully"
+          else
+            echo "❌ Failed to promote canary"
+            echo "$RESPONSE"
+            exit 1
+          fi
+
+  rollback:
+    name: Emergency Rollback
+    runs-on: ubuntu-latest
+    needs: start-canary
+    if: failure()
+    environment: production
+    steps:
+      - name: Rollback canary deployment
+        env:
+          CANARY_ID: ${{ needs.start-canary.outputs.canary_id }}
+        run: |
+          echo "Emergency rollback triggered..."
+          
+          if [[ -n "$CANARY_ID" ]]; then
+            curl -X POST http://canary-controller.zoptal-production:8090/canaries/$CANARY_ID/rollback
+            echo "✅ Canary deployment rolled back"
+          fi

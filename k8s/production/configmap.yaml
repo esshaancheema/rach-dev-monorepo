@@ -1,0 +1,308 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: zoptal-config
+  namespace: zoptal-production
+  labels:
+    app.kubernetes.io/name: zoptal
+    app.kubernetes.io/component: config
+data:
+  # Common configuration
+  NODE_ENV: "production"
+  LOG_LEVEL: "info"
+  RATE_LIMIT_WINDOW: "15m"
+  RATE_LIMIT_MAX_REQUESTS: "100"
+  
+  # Database configuration
+  POSTGRES_DB: "zoptal"
+  REDIS_DB: "0"
+  
+  # Service URLs (internal cluster communication)
+  AUTH_SERVICE_URL: "http://auth-service:4001"
+  PROJECT_SERVICE_URL: "http://project-service:4002"
+  AI_SERVICE_URL: "http://ai-service:4003"
+  BILLING_SERVICE_URL: "http://billing-service:4004"
+  NOTIFICATION_SERVICE_URL: "http://notification-service:4005"
+  
+  # External URLs for frontend
+  NEXT_PUBLIC_API_URL: "https://api.zoptal.com"
+  NEXT_PUBLIC_AUTH_URL: "https://auth.zoptal.com"
+  NEXT_PUBLIC_WS_URL: "wss://api.zoptal.com"
+  NEXT_PUBLIC_BILLING_URL: "https://billing.zoptal.com"
+  NEXT_PUBLIC_SITE_URL: "https://zoptal.com"
+  
+  # Feature flags
+  ENABLE_2FA: "true"
+  ENABLE_OAUTH: "true"
+  ENABLE_USAGE_TRACKING: "true"
+  ENABLE_BILLING: "true"
+  ENABLE_NOTIFICATIONS: "true"
+  
+  # AWS/Cloud configuration
+  AWS_REGION: "us-east-1"
+  
+  # Monitoring
+  METRICS_ENABLED: "true"
+  TRACING_ENABLED: "true"
+  
+  # Security
+  BCRYPT_ROUNDS: "12"
+  SESSION_TIMEOUT: "24h"
+  
+  # Email configuration
+  SMTP_PORT: "587"
+  EMAIL_FROM: "noreply@zoptal.com"
+  
+  # Redis configuration
+  redis.conf: |
+    # Redis production configuration
+    bind 0.0.0.0
+    port 6379
+    protected-mode yes
+    tcp-backlog 511
+    timeout 300
+    tcp-keepalive 300
+    daemonize no
+    supervised no
+    pidfile /var/run/redis_6379.pid
+    loglevel notice
+    logfile ""
+    databases 16
+    always-show-logo yes
+    save 900 1
+    save 300 10
+    save 60 10000
+    stop-writes-on-bgsave-error yes
+    rdbcompression yes
+    rdbchecksum yes
+    dbfilename dump.rdb
+    dir ./
+    replica-serve-stale-data yes
+    replica-read-only yes
+    repl-diskless-sync no
+    repl-diskless-sync-delay 5
+    repl-disable-tcp-nodelay no
+    replica-priority 100
+    maxmemory 1gb
+    maxmemory-policy allkeys-lru
+    lazyfree-lazy-eviction no
+    lazyfree-lazy-expire no
+    lazyfree-lazy-server-del no
+    replica-lazy-flush no
+    appendonly yes
+    appendfilename "appendonly.aof"
+    appendfsync everysec
+    no-appendfsync-on-rewrite no
+    auto-aof-rewrite-percentage 100
+    auto-aof-rewrite-min-size 64mb
+    aof-load-truncated yes
+    aof-use-rdb-preamble yes
+    lua-time-limit 5000
+    slowlog-log-slower-than 10000
+    slowlog-max-len 128
+    latency-monitor-threshold 0
+    notify-keyspace-events ""
+    hash-max-ziplist-entries 512
+    hash-max-ziplist-value 64
+    list-max-ziplist-size -2
+    list-compress-depth 0
+    set-max-intset-entries 512
+    zset-max-ziplist-entries 128
+    zset-max-ziplist-value 64
+    hll-sparse-max-bytes 3000
+    stream-node-max-bytes 4096
+    stream-node-max-entries 100
+    activerehashing yes
+    client-output-buffer-limit normal 0 0 0
+    client-output-buffer-limit replica 256mb 64mb 60
+    client-output-buffer-limit pubsub 32mb 8mb 60
+    hz 10
+    dynamic-hz yes
+    aof-rewrite-incremental-fsync yes
+    rdb-save-incremental-fsync yes
+  
+  # Nginx configuration
+  nginx.conf: |
+    user nginx;
+    worker_processes auto;
+    error_log /var/log/nginx/error.log notice;
+    pid /var/run/nginx.pid;
+    
+    events {
+        worker_connections 1024;
+        use epoll;
+        multi_accept on;
+    }
+    
+    http {
+        include /etc/nginx/mime.types;
+        default_type application/octet-stream;
+        
+        log_format main '$remote_addr - $remote_user [$time_local] "$request" '
+                        '$status $body_bytes_sent "$http_referer" '
+                        '"$http_user_agent" "$http_x_forwarded_for"';
+        
+        access_log /var/log/nginx/access.log main;
+        
+        sendfile on;
+        tcp_nopush on;
+        tcp_nodelay on;
+        keepalive_timeout 65;
+        types_hash_max_size 2048;
+        client_max_body_size 10M;
+        
+        # Gzip compression
+        gzip on;
+        gzip_vary on;
+        gzip_min_length 1024;
+        gzip_comp_level 6;
+        gzip_types
+            text/plain
+            text/css
+            text/xml
+            text/javascript
+            application/json
+            application/javascript
+            application/xml+rss
+            application/atom+xml
+            image/svg+xml;
+        
+        # Rate limiting
+        limit_req_zone $binary_remote_addr zone=api:10m rate=10r/s;
+        limit_req_zone $binary_remote_addr zone=auth:10m rate=5r/s;
+        
+        # SSL configuration
+        ssl_protocols TLSv1.2 TLSv1.3;
+        ssl_ciphers ECDHE-RSA-AES256-GCM-SHA512:DHE-RSA-AES256-GCM-SHA512:ECDHE-RSA-AES256-GCM-SHA384:DHE-RSA-AES256-GCM-SHA384;
+        ssl_prefer_server_ciphers off;
+        ssl_session_cache shared:SSL:10m;
+        ssl_session_timeout 10m;
+        
+        # Security headers
+        add_header X-Frame-Options DENY;
+        add_header X-Content-Type-Options nosniff;
+        add_header X-XSS-Protection "1; mode=block";
+        add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
+        
+        # Upstream backends
+        upstream admin {
+            server admin:3000 max_fails=3 fail_timeout=30s;
+        }
+        
+        upstream web-main {
+            server web-main:3000 max_fails=3 fail_timeout=30s;
+        }
+        
+        upstream auth-service {
+            server auth-service:4001 max_fails=3 fail_timeout=30s;
+        }
+        
+        upstream project-service {
+            server project-service:4002 max_fails=3 fail_timeout=30s;
+        }
+        
+        upstream ai-service {
+            server ai-service:4003 max_fails=3 fail_timeout=30s;
+        }
+        
+        upstream billing-service {
+            server billing-service:4004 max_fails=3 fail_timeout=30s;
+        }
+        
+        upstream notification-service {
+            server notification-service:4005 max_fails=3 fail_timeout=30s;
+        }
+        
+        # Main website
+        server {
+            listen 80;
+            server_name zoptal.com www.zoptal.com;
+            return 301 https://$server_name$request_uri;
+        }
+        
+        server {
+            listen 443 ssl http2;
+            server_name zoptal.com www.zoptal.com;
+            
+            location / {
+                proxy_pass http://web-main;
+                proxy_set_header Host $host;
+                proxy_set_header X-Real-IP $remote_addr;
+                proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+                proxy_set_header X-Forwarded-Proto $scheme;
+            }
+        }
+        
+        # Admin panel
+        server {
+            listen 443 ssl http2;
+            server_name admin.zoptal.com;
+            
+            location / {
+                proxy_pass http://admin;
+                proxy_set_header Host $host;
+                proxy_set_header X-Real-IP $remote_addr;
+                proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+                proxy_set_header X-Forwarded-Proto $scheme;
+            }
+        }
+        
+        # API Gateway
+        server {
+            listen 443 ssl http2;
+            server_name api.zoptal.com;
+            
+            # Auth service
+            location /auth/ {
+                limit_req zone=auth burst=20 nodelay;
+                proxy_pass http://auth-service/;
+                proxy_set_header Host $host;
+                proxy_set_header X-Real-IP $remote_addr;
+                proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+                proxy_set_header X-Forwarded-Proto $scheme;
+            }
+            
+            # Project service
+            location /projects/ {
+                limit_req zone=api burst=50 nodelay;
+                proxy_pass http://project-service/;
+                proxy_set_header Host $host;
+                proxy_set_header X-Real-IP $remote_addr;
+                proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+                proxy_set_header X-Forwarded-Proto $scheme;
+            }
+            
+            # AI service
+            location /ai/ {
+                limit_req zone=api burst=30 nodelay;
+                proxy_pass http://ai-service/;
+                proxy_set_header Host $host;
+                proxy_set_header X-Real-IP $remote_addr;
+                proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+                proxy_set_header X-Forwarded-Proto $scheme;
+                proxy_read_timeout 300s;
+                proxy_connect_timeout 300s;
+                proxy_send_timeout 300s;
+            }
+            
+            # Billing service
+            location /billing/ {
+                limit_req zone=api burst=20 nodelay;
+                proxy_pass http://billing-service/;
+                proxy_set_header Host $host;
+                proxy_set_header X-Real-IP $remote_addr;
+                proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+                proxy_set_header X-Forwarded-Proto $scheme;
+            }
+            
+            # Notification service
+            location /notifications/ {
+                limit_req zone=api burst=40 nodelay;
+                proxy_pass http://notification-service/;
+                proxy_set_header Host $host;
+                proxy_set_header X-Real-IP $remote_addr;
+                proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+                proxy_set_header X-Forwarded-Proto $scheme;
+            }
+        }
+    }

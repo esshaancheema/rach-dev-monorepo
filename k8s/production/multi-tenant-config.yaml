@@ -1,0 +1,734 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: zoptal-multi-tenant
+  labels:
+    name: zoptal-multi-tenant
+    environment: production
+    component: multi-tenancy
+
+---
+# Tenant Service Deployment
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: tenant-service
+  namespace: zoptal-multi-tenant
+  labels:
+    app: tenant-service
+    component: multi-tenancy
+spec:
+  replicas: 3
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  selector:
+    matchLabels:
+      app: tenant-service
+  template:
+    metadata:
+      labels:
+        app: tenant-service
+        component: multi-tenancy
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "3000"
+        prometheus.io/path: "/metrics"
+    spec:
+      containers:
+      - name: tenant-service
+        image: zoptal/tenant-service:latest
+        ports:
+        - containerPort: 3000
+          name: http
+        - containerPort: 9090
+          name: metrics
+        env:
+        - name: NODE_ENV
+          value: "production"
+        - name: PORT
+          value: "3000"
+        - name: MONGODB_URI
+          valueFrom:
+            secretKeyRef:
+              name: mongodb-credentials
+              key: uri
+        - name: REDIS_URL
+          valueFrom:
+            secretKeyRef:
+              name: redis-credentials
+              key: url
+        - name: STRIPE_SECRET_KEY
+          valueFrom:
+            secretKeyRef:
+              name: stripe-credentials
+              key: secret-key
+        - name: JWT_SECRET
+          valueFrom:
+            secretKeyRef:
+              name: jwt-credentials
+              key: secret
+        - name: ENCRYPTION_KEY
+          valueFrom:
+            secretKeyRef:
+              name: encryption-credentials
+              key: key
+        resources:
+          requests:
+            memory: "512Mi"
+            cpu: "250m"
+          limits:
+            memory: "1Gi"
+            cpu: "500m"
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 3000
+          initialDelaySeconds: 30
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+        readinessProbe:
+          httpGet:
+            path: /ready
+            port: 3000
+          initialDelaySeconds: 5
+          periodSeconds: 5
+          timeoutSeconds: 3
+          failureThreshold: 3
+        volumeMounts:
+        - name: tenant-config
+          mountPath: /app/config
+          readOnly: true
+        securityContext:
+          allowPrivilegeEscalation: false
+          runAsNonRoot: true
+          runAsUser: 1000
+          capabilities:
+            drop:
+            - ALL
+      volumes:
+      - name: tenant-config
+        configMap:
+          name: tenant-service-config
+      securityContext:
+        fsGroup: 1000
+
+---
+# Tenant Service Config Map
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: tenant-service-config
+  namespace: zoptal-multi-tenant
+data:
+  tenant-config.json: |
+    {
+      "isolation": {
+        "defaultStrategy": "schema",
+        "supportedStrategies": ["database", "schema", "row_level"],
+        "maxTenantsPerDb": 1000
+      },
+      "plans": {
+        "trial": {
+          "duration": "14d",
+          "maxUsers": 3,
+          "maxProjects": 5,
+          "maxStorageGB": 1,
+          "features": ["aiCodeGeneration"]
+        },
+        "starter": {
+          "maxUsers": 10,
+          "maxProjects": 50,
+          "maxStorageGB": 10,
+          "features": ["aiCodeGeneration", "realTimeCollaboration", "apiAccess"]
+        },
+        "professional": {
+          "maxUsers": 50,
+          "maxProjects": 500,
+          "maxStorageGB": 100,
+          "features": ["aiCodeGeneration", "realTimeCollaboration", "customBranding", "advancedAnalytics", "apiAccess", "webhooks"]
+        },
+        "enterprise": {
+          "maxUsers": -1,
+          "maxProjects": -1,
+          "maxStorageGB": 1000,
+          "features": ["aiCodeGeneration", "realTimeCollaboration", "customBranding", "ssoIntegration", "advancedAnalytics", "apiAccess", "webhooks"]
+        }
+      },
+      "security": {
+        "encryptionAtRest": true,
+        "encryptionInTransit": true,
+        "auditLogging": true,
+        "dataRetention": "7y"
+      }
+    }
+
+---
+# Tenant Service Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: tenant-service
+  namespace: zoptal-multi-tenant
+  labels:
+    app: tenant-service
+    component: multi-tenancy
+spec:
+  selector:
+    app: tenant-service
+  ports:
+  - name: http
+    port: 80
+    targetPort: 3000
+    protocol: TCP
+  - name: metrics
+    port: 9090
+    targetPort: 9090
+    protocol: TCP
+  type: ClusterIP
+
+---
+# Tenant Isolation Gateway
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: tenant-isolation-gateway
+  namespace: zoptal-multi-tenant
+  labels:
+    app: tenant-isolation-gateway
+    component: gateway
+spec:
+  replicas: 3
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 2
+      maxUnavailable: 0
+  selector:
+    matchLabels:
+      app: tenant-isolation-gateway
+  template:
+    metadata:
+      labels:
+        app: tenant-isolation-gateway
+        component: gateway
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8080"
+        prometheus.io/path: "/metrics"
+    spec:
+      containers:
+      - name: gateway
+        image: nginx:1.21-alpine
+        ports:
+        - containerPort: 8080
+          name: http
+        - containerPort: 9113
+          name: metrics
+        volumeMounts:
+        - name: gateway-config
+          mountPath: /etc/nginx/nginx.conf
+          subPath: nginx.conf
+        - name: tenant-routing
+          mountPath: /etc/nginx/conf.d/tenant-routing.conf
+          subPath: tenant-routing.conf
+        resources:
+          requests:
+            memory: "128Mi"
+            cpu: "100m"
+          limits:
+            memory: "256Mi"
+            cpu: "200m"
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8080
+          initialDelaySeconds: 10
+          periodSeconds: 10
+        readinessProbe:
+          httpGet:
+            path: /ready
+            port: 8080
+          initialDelaySeconds: 5
+          periodSeconds: 5
+      - name: nginx-exporter
+        image: nginx/nginx-prometheus-exporter:0.10.0
+        args:
+        - -nginx.scrape-uri=http://localhost:8080/nginx_status
+        ports:
+        - containerPort: 9113
+          name: metrics
+        resources:
+          requests:
+            memory: "32Mi"
+            cpu: "50m"
+          limits:
+            memory: "64Mi"
+            cpu: "100m"
+      volumes:
+      - name: gateway-config
+        configMap:
+          name: tenant-gateway-config
+      - name: tenant-routing
+        configMap:
+          name: tenant-routing-config
+
+---
+# Tenant Gateway Config
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: tenant-gateway-config
+  namespace: zoptal-multi-tenant
+data:
+  nginx.conf: |
+    user nginx;
+    worker_processes auto;
+    error_log /var/log/nginx/error.log warn;
+    pid /var/run/nginx.pid;
+
+    events {
+        worker_connections 1024;
+        use epoll;
+        multi_accept on;
+    }
+
+    http {
+        include /etc/nginx/mime.types;
+        default_type application/octet-stream;
+
+        # Logging format with tenant information
+        log_format tenant_log '$remote_addr - $tenant_id [$time_local] '
+                             '"$request" $status $body_bytes_sent '
+                             '"$http_referer" "$http_user_agent" '
+                             '$request_time $upstream_response_time';
+
+        access_log /var/log/nginx/access.log tenant_log;
+
+        # Performance optimizations
+        sendfile on;
+        tcp_nopush on;
+        tcp_nodelay on;
+        keepalive_timeout 65;
+        types_hash_max_size 2048;
+        client_max_body_size 100M;
+
+        # Gzip compression
+        gzip on;
+        gzip_vary on;
+        gzip_min_length 1000;
+        gzip_proxied any;
+        gzip_comp_level 6;
+        gzip_types
+            text/plain
+            text/css
+            text/xml
+            text/javascript
+            application/json
+            application/javascript
+            application/xml+rss
+            application/atom+xml
+            image/svg+xml;
+
+        # Rate limiting zones
+        limit_req_zone $tenant_id zone=tenant_api:10m rate=100r/m;
+        limit_req_zone $tenant_id zone=tenant_ai:10m rate=10r/m;
+        limit_req_zone $binary_remote_addr zone=global_ip:10m rate=1000r/m;
+
+        # Upstream services
+        upstream tenant-service {
+            least_conn;
+            server tenant-service.zoptal-multi-tenant.svc.cluster.local:80;
+            keepalive 32;
+        }
+
+        upstream api-gateway {
+            least_conn;
+            server api-gateway.zoptal-production.svc.cluster.local:80;
+            keepalive 32;
+        }
+
+        # Server blocks
+        include /etc/nginx/conf.d/*.conf;
+
+        # Health check endpoint
+        server {
+            listen 8080;
+            location /health {
+                access_log off;
+                return 200 "healthy\n";
+                add_header Content-Type text/plain;
+            }
+            
+            location /ready {
+                access_log off;
+                return 200 "ready\n";
+                add_header Content-Type text/plain;
+            }
+
+            location /nginx_status {
+                stub_status on;
+                access_log off;
+                allow 127.0.0.1;
+                allow 10.0.0.0/8;
+                deny all;
+            }
+        }
+    }
+
+---
+# Tenant Routing Config
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: tenant-routing-config
+  namespace: zoptal-multi-tenant
+data:
+  tenant-routing.conf: |
+    # Tenant identification and routing
+    map $host $tenant_id {
+        default "";
+        ~^(?<tenant>[^.]+)\.zoptal\.com$ $tenant;
+        ~^(?<custom_domain>.+)$ $custom_domain;
+    }
+
+    # Custom domain to tenant mapping (updated dynamically)
+    map $host $custom_tenant_id {
+        default "";
+        # This would be populated by tenant service
+        # example.com tenant_12345;
+        # mycompany.com tenant_67890;
+    }
+
+    # Set final tenant ID
+    map $custom_tenant_id $final_tenant_id {
+        default $tenant_id;
+        ~.+ $custom_tenant_id;
+    }
+
+    # Main server block for tenant routing
+    server {
+        listen 80;
+        server_name *.zoptal.com;
+
+        # Set tenant context
+        set $tenant_id $final_tenant_id;
+
+        # Security headers
+        add_header X-Frame-Options DENY;
+        add_header X-Content-Type-Options nosniff;
+        add_header X-XSS-Protection "1; mode=block";
+        add_header Strict-Transport-Security "max-age=31536000; includeSubDomains";
+
+        # Tenant identification required
+        if ($tenant_id = "") {
+            return 400 "Tenant not identified";
+        }
+
+        # Add tenant headers
+        proxy_set_header X-Tenant-ID $tenant_id;
+        proxy_set_header X-Forwarded-For $remote_addr;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header Host $host;
+
+        # API routes with rate limiting
+        location /api/ {
+            limit_req zone=tenant_api burst=50 nodelay;
+            limit_req zone=global_ip burst=100 nodelay;
+            
+            proxy_pass http://api-gateway;
+            proxy_connect_timeout 5s;
+            proxy_send_timeout 30s;
+            proxy_read_timeout 30s;
+            proxy_buffer_size 4k;
+            proxy_buffers 8 4k;
+            proxy_busy_buffers_size 8k;
+        }
+
+        # AI service routes with strict rate limiting
+        location /api/ai/ {
+            limit_req zone=tenant_ai burst=5 nodelay;
+            limit_req zone=global_ip burst=50 nodelay;
+            
+            proxy_pass http://api-gateway;
+            proxy_connect_timeout 5s;
+            proxy_send_timeout 60s;
+            proxy_read_timeout 60s;
+            proxy_buffer_size 8k;
+            proxy_buffers 16 8k;
+            proxy_busy_buffers_size 16k;
+        }
+
+        # Tenant management routes
+        location /tenant/ {
+            proxy_pass http://tenant-service;
+            proxy_connect_timeout 5s;
+            proxy_send_timeout 30s;
+            proxy_read_timeout 30s;
+        }
+
+        # Static assets (cacheable)
+        location /static/ {
+            expires 1y;
+            add_header Cache-Control "public, immutable";
+            proxy_pass http://api-gateway;
+        }
+
+        # Health checks
+        location /health {
+            access_log off;
+            proxy_pass http://api-gateway/health;
+        }
+
+        # Default route
+        location / {
+            proxy_pass http://api-gateway;
+            proxy_connect_timeout 5s;
+            proxy_send_timeout 30s;
+            proxy_read_timeout 30s;
+        }
+
+        # Error pages
+        error_page 429 /error/rate-limit.html;
+        error_page 400 /error/bad-request.html;
+        error_page 500 502 503 504 /error/server-error.html;
+    }
+
+    # Custom domain server block
+    server {
+        listen 80;
+        server_name ~^(?<domain>.+)$;
+
+        # Only process if not a zoptal.com subdomain
+        if ($host ~ "\.zoptal\.com$") {
+            return 444;
+        }
+
+        # Set tenant context for custom domains
+        set $tenant_id $custom_tenant_id;
+
+        # If no tenant mapping found, return error
+        if ($tenant_id = "") {
+            return 404 "Domain not configured";
+        }
+
+        # Same configuration as main server
+        include /etc/nginx/conf.d/common-tenant-config.conf;
+    }
+
+---
+# Horizontal Pod Autoscaler for Tenant Service
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: tenant-service-hpa
+  namespace: zoptal-multi-tenant
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: tenant-service
+  minReplicas: 3
+  maxReplicas: 10
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 70
+  - type: Resource
+    resource:
+      name: memory
+      target:
+        type: Utilization
+        averageUtilization: 80
+  - type: Pods
+    pods:
+      metric:
+        name: tenant_requests_per_second
+      target:
+        type: AverageValue
+        averageValue: "100"
+  behavior:
+    scaleDown:
+      stabilizationWindowSeconds: 300
+      policies:
+      - type: Percent
+        value: 10
+        periodSeconds: 60
+    scaleUp:
+      stabilizationWindowSeconds: 60
+      policies:
+      - type: Percent
+        value: 50
+        periodSeconds: 60
+      - type: Pods
+        value: 2
+        periodSeconds: 60
+      selectPolicy: Max
+
+---
+# Pod Disruption Budget
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: tenant-service-pdb
+  namespace: zoptal-multi-tenant
+spec:
+  minAvailable: 2
+  selector:
+    matchLabels:
+      app: tenant-service
+
+---
+# Network Policy for Tenant Isolation
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: tenant-isolation-policy
+  namespace: zoptal-multi-tenant
+spec:
+  podSelector:
+    matchLabels:
+      component: multi-tenancy
+  policyTypes:
+  - Ingress
+  - Egress
+  ingress:
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          name: zoptal-production
+    - namespaceSelector:
+        matchLabels:
+          name: istio-system
+    ports:
+    - protocol: TCP
+      port: 3000
+    - protocol: TCP
+      port: 8080
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          name: monitoring
+    ports:
+    - protocol: TCP
+      port: 9090
+    - protocol: TCP
+      port: 9113
+  egress:
+  - to: []
+    ports:
+    - protocol: TCP
+      port: 27017  # MongoDB
+    - protocol: TCP
+      port: 6379   # Redis
+    - protocol: TCP
+      port: 443    # HTTPS outbound
+    - protocol: TCP
+      port: 53     # DNS
+    - protocol: UDP
+      port: 53     # DNS
+
+---
+# Tenant Data Encryption Secret
+apiVersion: v1
+kind: Secret
+metadata:
+  name: encryption-credentials
+  namespace: zoptal-multi-tenant
+type: Opaque
+data:
+  # Base64 encoded encryption key
+  key: <base64-encoded-encryption-key>
+
+---
+# Service Monitor for Prometheus
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: tenant-service-monitor
+  namespace: zoptal-multi-tenant
+  labels:
+    app: tenant-service
+    component: multi-tenancy
+spec:
+  selector:
+    matchLabels:
+      app: tenant-service
+  endpoints:
+  - port: metrics
+    interval: 30s
+    path: /metrics
+    honorLabels: true
+  namespaceSelector:
+    matchNames:
+    - zoptal-multi-tenant
+
+---
+# Tenant Metrics Dashboard ConfigMap
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: tenant-metrics-dashboard
+  namespace: zoptal-multi-tenant
+  labels:
+    grafana_dashboard: "1"
+data:
+  tenant-metrics.json: |
+    {
+      "dashboard": {
+        "id": null,
+        "title": "Multi-Tenant Metrics",
+        "tags": ["zoptal", "multi-tenancy"],
+        "style": "dark",
+        "timezone": "browser",
+        "panels": [
+          {
+            "title": "Active Tenants",
+            "type": "stat",
+            "targets": [
+              {
+                "expr": "count(up{job=\"tenant-service\"})"
+              }
+            ]
+          },
+          {
+            "title": "Tenant Requests Rate",
+            "type": "graph",
+            "targets": [
+              {
+                "expr": "rate(tenant_requests_total[5m])"
+              }
+            ]
+          },
+          {
+            "title": "Database Connections by Tenant",
+            "type": "graph",
+            "targets": [
+              {
+                "expr": "tenant_database_connections"
+              }
+            ]
+          },
+          {
+            "title": "Resource Usage by Plan",
+            "type": "piechart",
+            "targets": [
+              {
+                "expr": "sum by (plan) (tenant_resource_usage)"
+              }
+            ]
+          }
+        ],
+        "time": {
+          "from": "now-1h",
+          "to": "now"
+        },
+        "refresh": "30s"
+      }
+    }

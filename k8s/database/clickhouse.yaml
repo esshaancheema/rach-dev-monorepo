@@ -1,0 +1,213 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: clickhouse-pvc
+  namespace: zoptal
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 50Gi
+  storageClassName: gp2
+
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: clickhouse-config
+  namespace: zoptal
+data:
+  config.xml: |
+    <clickhouse>
+        <logger>
+            <level>information</level>
+            <console>true</console>
+        </logger>
+        
+        <http_port>8123</http_port>
+        <tcp_port>9000</tcp_port>
+        
+        <listen_host>::</listen_host>
+        
+        <max_connections>4096</max_connections>
+        <keep_alive_timeout>3</keep_alive_timeout>
+        <max_concurrent_queries>100</max_concurrent_queries>
+        
+        <uncompressed_cache_size>8589934592</uncompressed_cache_size>
+        <mark_cache_size>5368709120</mark_cache_size>
+        
+        <path>/var/lib/clickhouse/</path>
+        <tmp_path>/var/lib/clickhouse/tmp/</tmp_path>
+        <user_files_path>/var/lib/clickhouse/user_files/</user_files_path>
+        
+        <users_config>users.xml</users_config>
+        
+        <default_profile>default</default_profile>
+        <default_database>default</default_database>
+        
+        <timezone>UTC</timezone>
+        
+        <mlock_executable>false</mlock_executable>
+        
+        <remote_servers>
+            <test_shard_localhost>
+                <shard>
+                    <replica>
+                        <host>localhost</host>
+                        <port>9000</port>
+                    </replica>
+                </shard>
+            </test_shard_localhost>
+        </remote_servers>
+    </clickhouse>
+  
+  users.xml: |
+    <clickhouse>
+        <profiles>
+            <default>
+                <max_memory_usage>10000000000</max_memory_usage>
+                <use_uncompressed_cache>0</use_uncompressed_cache>
+                <load_balancing>random</load_balancing>
+            </default>
+        </profiles>
+        
+        <users>
+            <default>
+                <password></password>
+                <networks incl="networks" replace="replace">
+                    <ip>::/0</ip>
+                </networks>
+                <profile>default</profile>
+                <quota>default</quota>
+            </default>
+            
+            <analytics>
+                <password>CHANGE_ME</password>
+                <networks>
+                    <ip>::/0</ip>
+                </networks>
+                <profile>default</profile>
+                <quota>default</quota>
+                <databases>
+                    <analytics>*</analytics>
+                </databases>
+            </analytics>
+        </users>
+        
+        <quotas>
+            <default>
+                <interval>
+                    <duration>3600</duration>
+                    <queries>0</queries>
+                    <errors>0</errors>
+                    <result_rows>0</result_rows>
+                    <read_rows>0</read_rows>
+                    <execution_time>0</execution_time>
+                </interval>
+            </default>
+        </quotas>
+    </clickhouse>
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: zoptal-clickhouse
+  namespace: zoptal
+  labels:
+    app: clickhouse
+    component: analytics-database
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: clickhouse
+  template:
+    metadata:
+      labels:
+        app: clickhouse
+        component: analytics-database
+    spec:
+      containers:
+      - name: clickhouse
+        image: clickhouse/clickhouse-server:23-alpine
+        ports:
+        - containerPort: 8123
+          name: http
+        - containerPort: 9000
+          name: tcp
+        env:
+        - name: CLICKHOUSE_DB
+          valueFrom:
+            configMapKeyRef:
+              name: zoptal-config
+              key: CLICKHOUSE_DATABASE
+        - name: CLICKHOUSE_USER
+          valueFrom:
+            configMapKeyRef:
+              name: zoptal-config
+              key: CLICKHOUSE_USER
+        - name: CLICKHOUSE_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: zoptal-secrets
+              key: CLICKHOUSE_PASSWORD
+        - name: CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT
+          value: "1"
+        volumeMounts:
+        - name: clickhouse-config
+          mountPath: /etc/clickhouse-server
+        - name: clickhouse-storage
+          mountPath: /var/lib/clickhouse
+        resources:
+          requests:
+            memory: "1Gi"
+            cpu: "500m"
+          limits:
+            memory: "4Gi"
+            cpu: "2000m"
+        livenessProbe:
+          httpGet:
+            path: /ping
+            port: 8123
+          initialDelaySeconds: 60
+          periodSeconds: 30
+        readinessProbe:
+          httpGet:
+            path: /ping
+            port: 8123
+          initialDelaySeconds: 10
+          periodSeconds: 10
+      volumes:
+      - name: clickhouse-config
+        configMap:
+          name: clickhouse-config
+      - name: clickhouse-storage
+        persistentVolumeClaim:
+          claimName: clickhouse-pvc
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: zoptal-clickhouse
+  namespace: zoptal
+  labels:
+    app: clickhouse
+    component: analytics-database
+spec:
+  ports:
+  - port: 8123
+    targetPort: 8123
+    protocol: TCP
+    name: http
+  - port: 9000
+    targetPort: 9000
+    protocol: TCP
+    name: tcp
+  selector:
+    app: clickhouse
+  type: ClusterIP

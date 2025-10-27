@@ -1,0 +1,556 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Zoptal Analytics Dashboard Builder</title>
+    <link href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css" rel="stylesheet">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="https://unpkg.com/vue@3/dist/vue.global.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/axios/dist/axios.min.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
+    <style>
+        .drag-over {
+            @apply border-blue-500 bg-blue-50;
+        }
+        .widget-container {
+            transition: all 0.3s ease;
+        }
+        .widget-container:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 10px 25px rgba(0,0,0,0.1);
+        }
+        .grid-container {
+            display: grid;
+            grid-template-columns: repeat(12, 1fr);
+            gap: 1rem;
+            min-height: 600px;
+        }
+        .widget-preview {
+            border: 2px dashed #e5e7eb;
+            border-radius: 8px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: #9ca3af;
+            font-size: 14px;
+        }
+    </style>
+</head>
+<body class="bg-gray-100">
+    <div id="app" class="min-h-screen">
+        <!-- Header -->
+        <header class="bg-white shadow-md">
+            <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+                <div class="flex justify-between items-center py-6">
+                    <div class="flex items-center">
+                        <h1 class="text-3xl font-bold text-gray-900">
+                            <i class="fas fa-chart-line text-blue-600 mr-3"></i>
+                            Dashboard Builder
+                        </h1>
+                    </div>
+                    <div class="flex items-center space-x-4">
+                        <button @click="previewDashboard" class="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg transition-colors duration-200">
+                            <i class="fas fa-eye mr-2"></i>
+                            Preview
+                        </button>
+                        <button @click="saveDashboard" class="bg-green-600 hover:bg-green-700 text-white px-4 py-2 rounded-lg transition-colors duration-200">
+                            <i class="fas fa-save mr-2"></i>
+                            Save Dashboard
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </header>
+
+        <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+            <div class="grid grid-cols-1 lg:grid-cols-4 gap-6">
+                <!-- Widget Palette -->
+                <div class="lg:col-span-1">
+                    <div class="bg-white rounded-lg shadow-md p-6">
+                        <h2 class="text-xl font-semibold text-gray-900 mb-4">
+                            <i class="fas fa-puzzle-piece text-purple-600 mr-2"></i>
+                            Widget Palette
+                        </h2>
+                        
+                        <!-- Widget Categories -->
+                        <div class="space-y-4">
+                            <div>
+                                <h3 class="text-sm font-medium text-gray-700 mb-2">Charts</h3>
+                                <div class="grid grid-cols-2 gap-2">
+                                    <div @click="addWidget('chart', 'line')" 
+                                         class="widget-item p-3 border border-gray-200 rounded-lg cursor-pointer hover:bg-blue-50 hover:border-blue-300 transition-all duration-200">
+                                        <i class="fas fa-chart-line text-blue-600 mb-1"></i>
+                                        <div class="text-xs text-gray-600">Line Chart</div>
+                                    </div>
+                                    <div @click="addWidget('chart', 'bar')"
+                                         class="widget-item p-3 border border-gray-200 rounded-lg cursor-pointer hover:bg-blue-50 hover:border-blue-300 transition-all duration-200">
+                                        <i class="fas fa-chart-bar text-green-600 mb-1"></i>
+                                        <div class="text-xs text-gray-600">Bar Chart</div>
+                                    </div>
+                                    <div @click="addWidget('chart', 'pie')"
+                                         class="widget-item p-3 border border-gray-200 rounded-lg cursor-pointer hover:bg-blue-50 hover:border-blue-300 transition-all duration-200">
+                                        <i class="fas fa-chart-pie text-yellow-600 mb-1"></i>
+                                        <div class="text-xs text-gray-600">Pie Chart</div>
+                                    </div>
+                                    <div @click="addWidget('chart', 'area')"
+                                         class="widget-item p-3 border border-gray-200 rounded-lg cursor-pointer hover:bg-blue-50 hover:border-blue-300 transition-all duration-200">
+                                        <i class="fas fa-chart-area text-purple-600 mb-1"></i>
+                                        <div class="text-xs text-gray-600">Area Chart</div>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div>
+                                <h3 class="text-sm font-medium text-gray-700 mb-2">Metrics</h3>
+                                <div class="grid grid-cols-1 gap-2">
+                                    <div @click="addWidget('metric', 'number')"
+                                         class="widget-item p-3 border border-gray-200 rounded-lg cursor-pointer hover:bg-green-50 hover:border-green-300 transition-all duration-200">
+                                        <i class="fas fa-hashtag text-green-600 mb-1"></i>
+                                        <div class="text-xs text-gray-600">Number Metric</div>
+                                    </div>
+                                    <div @click="addWidget('metric', 'gauge')"
+                                         class="widget-item p-3 border border-gray-200 rounded-lg cursor-pointer hover:bg-green-50 hover:border-green-300 transition-all duration-200">
+                                        <i class="fas fa-tachometer-alt text-orange-600 mb-1"></i>
+                                        <div class="text-xs text-gray-600">Gauge</div>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div>
+                                <h3 class="text-sm font-medium text-gray-700 mb-2">Data</h3>
+                                <div class="grid grid-cols-1 gap-2">
+                                    <div @click="addWidget('table', 'data')"
+                                         class="widget-item p-3 border border-gray-200 rounded-lg cursor-pointer hover:bg-purple-50 hover:border-purple-300 transition-all duration-200">
+                                        <i class="fas fa-table text-purple-600 mb-1"></i>
+                                        <div class="text-xs text-gray-600">Data Table</div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Dashboard Templates -->
+                    <div class="bg-white rounded-lg shadow-md p-6 mt-6">
+                        <h2 class="text-xl font-semibold text-gray-900 mb-4">
+                            <i class="fas fa-templates text-indigo-600 mr-2"></i>
+                            Templates
+                        </h2>
+                        <div class="space-y-2">
+                            <button @click="loadTemplate('website-analytics')" 
+                                    class="w-full text-left p-3 border border-gray-200 rounded-lg hover:bg-indigo-50 hover:border-indigo-300 transition-all duration-200">
+                                <div class="text-sm font-medium text-gray-900">Website Analytics</div>
+                                <div class="text-xs text-gray-600">Traffic, users, conversions</div>
+                            </button>
+                            <button @click="loadTemplate('business-intelligence')"
+                                    class="w-full text-left p-3 border border-gray-200 rounded-lg hover:bg-indigo-50 hover:border-indigo-300 transition-all duration-200">
+                                <div class="text-sm font-medium text-gray-900">Business Intelligence</div>
+                                <div class="text-xs text-gray-600">Revenue, KPIs, growth</div>
+                            </button>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Dashboard Canvas -->
+                <div class="lg:col-span-3">
+                    <div class="bg-white rounded-lg shadow-md p-6">
+                        <div class="flex justify-between items-center mb-6">
+                            <h2 class="text-xl font-semibold text-gray-900">
+                                <i class="fas fa-paint-brush text-orange-600 mr-2"></i>
+                                Dashboard Canvas
+                            </h2>
+                            <div class="flex items-center space-x-4">
+                                <input v-model="dashboardName" 
+                                       placeholder="Dashboard Name" 
+                                       class="px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent">
+                                <button @click="clearDashboard" 
+                                        class="text-red-600 hover:text-red-800 transition-colors duration-200">
+                                    <i class="fas fa-trash-alt"></i>
+                                </button>
+                            </div>
+                        </div>
+
+                        <!-- Grid Container -->
+                        <div class="grid-container bg-gray-50 rounded-lg p-4 relative"
+                             @drop="handleDrop"
+                             @dragover.prevent
+                             @dragenter.prevent>
+                            
+                            <!-- Widgets -->
+                            <div v-for="widget in widgets" 
+                                 :key="widget.id"
+                                 :style="getWidgetStyle(widget)"
+                                 class="widget-container bg-white border border-gray-200 rounded-lg shadow-sm relative">
+                                
+                                <!-- Widget Header -->
+                                <div class="flex justify-between items-center p-3 border-b border-gray-200">
+                                    <h3 class="text-sm font-medium text-gray-900">{{ widget.title }}</h3>
+                                    <div class="flex items-center space-x-2">
+                                        <button @click="editWidget(widget)" 
+                                                class="text-gray-400 hover:text-blue-600 transition-colors duration-200">
+                                            <i class="fas fa-cog text-xs"></i>
+                                        </button>
+                                        <button @click="removeWidget(widget.id)" 
+                                                class="text-gray-400 hover:text-red-600 transition-colors duration-200">
+                                            <i class="fas fa-times text-xs"></i>
+                                        </button>
+                                    </div>
+                                </div>
+
+                                <!-- Widget Content -->
+                                <div class="p-4">
+                                    <div v-if="widget.type === 'chart'" class="h-32">
+                                        <canvas :id="'chart-' + widget.id"></canvas>
+                                    </div>
+                                    <div v-else-if="widget.type === 'metric'" class="text-center">
+                                        <div class="text-3xl font-bold text-blue-600">{{ widget.data?.value || '0' }}</div>
+                                        <div class="text-sm text-gray-600">{{ widget.config?.metric || 'Metric' }}</div>
+                                    </div>
+                                    <div v-else-if="widget.type === 'table'" class="text-sm text-gray-600">
+                                        <div class="space-y-1">
+                                            <div class="flex justify-between border-b pb-1">
+                                                <span>Column 1</span>
+                                                <span>Value 1</span>
+                                            </div>
+                                            <div class="flex justify-between border-b pb-1">
+                                                <span>Column 2</span>
+                                                <span>Value 2</span>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <!-- Empty State -->
+                            <div v-if="widgets.length === 0" 
+                                 class="col-span-12 flex flex-col items-center justify-center py-16 text-gray-500">
+                                <i class="fas fa-plus-circle text-6xl mb-4"></i>
+                                <h3 class="text-xl font-medium mb-2">Start Building Your Dashboard</h3>
+                                <p class="text-center">Drag widgets from the palette or choose a template to get started</p>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Widget Configuration Modal -->
+        <div v-if="editingWidget" class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+            <div class="bg-white rounded-lg shadow-xl p-6 w-full max-w-2xl mx-4">
+                <div class="flex justify-between items-center mb-6">
+                    <h2 class="text-xl font-semibold text-gray-900">Configure Widget</h2>
+                    <button @click="closeEditModal" class="text-gray-400 hover:text-gray-600">
+                        <i class="fas fa-times"></i>
+                    </button>
+                </div>
+
+                <div class="space-y-4">
+                    <div>
+                        <label class="block text-sm font-medium text-gray-700 mb-2">Widget Title</label>
+                        <input v-model="editingWidget.title" 
+                               class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500">
+                    </div>
+
+                    <div v-if="editingWidget.type === 'chart'">
+                        <label class="block text-sm font-medium text-gray-700 mb-2">Chart Type</label>
+                        <select v-model="editingWidget.config.chartType" 
+                                class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500">
+                            <option value="line">Line Chart</option>
+                            <option value="bar">Bar Chart</option>
+                            <option value="pie">Pie Chart</option>
+                            <option value="area">Area Chart</option>
+                        </select>
+                    </div>
+
+                    <div v-if="editingWidget.type === 'metric'">
+                        <label class="block text-sm font-medium text-gray-700 mb-2">Metric Name</label>
+                        <input v-model="editingWidget.config.metric" 
+                               placeholder="e.g., Total Users"
+                               class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500">
+                    </div>
+
+                    <div class="grid grid-cols-2 gap-4">
+                        <div>
+                            <label class="block text-sm font-medium text-gray-700 mb-2">Width (columns)</label>
+                            <select v-model="editingWidget.position.width" 
+                                    class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500">
+                                <option :value="i" v-for="i in 12" :key="i">{{ i }}</option>
+                            </select>
+                        </div>
+                        <div>
+                            <label class="block text-sm font-medium text-gray-700 mb-2">Height (rows)</label>
+                            <select v-model="editingWidget.position.height" 
+                                    class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500">
+                                <option :value="i" v-for="i in 6" :key="i">{{ i }}</option>
+                            </select>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="flex justify-end space-x-4 mt-6">
+                    <button @click="closeEditModal" 
+                            class="px-4 py-2 border border-gray-300 rounded-lg text-gray-700 hover:bg-gray-50">
+                        Cancel
+                    </button>
+                    <button @click="saveWidgetConfig" 
+                            class="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700">
+                        Save Changes
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const { createApp } = Vue;
+
+        createApp({
+            data() {
+                return {
+                    dashboardName: 'My Dashboard',
+                    widgets: [],
+                    editingWidget: null,
+                    nextWidgetId: 1,
+                    gridColumns: 12,
+                };
+            },
+            methods: {
+                addWidget(type, subtype) {
+                    const widget = {
+                        id: this.nextWidgetId++,
+                        type: type,
+                        title: this.getDefaultTitle(type, subtype),
+                        position: {
+                            x: 0,
+                            y: 0,
+                            width: type === 'metric' ? 3 : 6,
+                            height: type === 'metric' ? 2 : 4,
+                        },
+                        config: {
+                            chartType: subtype,
+                            metric: type === 'metric' ? 'Sample Metric' : undefined,
+                        },
+                        data: type === 'metric' ? { value: Math.floor(Math.random() * 1000) } : {},
+                    };
+
+                    // Find the next available position
+                    const position = this.findNextPosition(widget.position.width, widget.position.height);
+                    widget.position.x = position.x;
+                    widget.position.y = position.y;
+
+                    this.widgets.push(widget);
+                    
+                    // Render chart if it's a chart widget
+                    if (type === 'chart') {
+                        this.$nextTick(() => {
+                            this.renderChart(widget);
+                        });
+                    }
+                },
+
+                getDefaultTitle(type, subtype) {
+                    const titles = {
+                        chart: {
+                            line: 'Line Chart',
+                            bar: 'Bar Chart',
+                            pie: 'Pie Chart',
+                            area: 'Area Chart',
+                        },
+                        metric: {
+                            number: 'Number Metric',
+                            gauge: 'Gauge Metric',
+                        },
+                        table: {
+                            data: 'Data Table',
+                        },
+                    };
+                    return titles[type]?.[subtype] || `${type} Widget`;
+                },
+
+                findNextPosition(width, height) {
+                    const occupied = new Set();
+                    
+                    // Mark occupied positions
+                    this.widgets.forEach(widget => {
+                        for (let x = widget.position.x; x < widget.position.x + widget.position.width; x++) {
+                            for (let y = widget.position.y; y < widget.position.y + widget.position.height; y++) {
+                                occupied.add(`${x},${y}`);
+                            }
+                        }
+                    });
+
+                    // Find first available position
+                    for (let y = 0; y < 100; y++) {
+                        for (let x = 0; x <= this.gridColumns - width; x++) {
+                            let canPlace = true;
+                            for (let dx = 0; dx < width && canPlace; dx++) {
+                                for (let dy = 0; dy < height && canPlace; dy++) {
+                                    if (occupied.has(`${x + dx},${y + dy}`)) {
+                                        canPlace = false;
+                                    }
+                                }
+                            }
+                            if (canPlace) {
+                                return { x, y };
+                            }
+                        }
+                    }
+                    return { x: 0, y: 0 };
+                },
+
+                removeWidget(widgetId) {
+                    this.widgets = this.widgets.filter(w => w.id !== widgetId);
+                },
+
+                editWidget(widget) {
+                    this.editingWidget = { ...widget };
+                },
+
+                closeEditModal() {
+                    this.editingWidget = null;
+                },
+
+                saveWidgetConfig() {
+                    const index = this.widgets.findIndex(w => w.id === this.editingWidget.id);
+                    if (index !== -1) {
+                        this.widgets[index] = { ...this.editingWidget };
+                        
+                        // Re-render chart if needed
+                        if (this.editingWidget.type === 'chart') {
+                            this.$nextTick(() => {
+                                this.renderChart(this.widgets[index]);
+                            });
+                        }
+                    }
+                    this.closeEditModal();
+                },
+
+                getWidgetStyle(widget) {
+                    return {
+                        gridColumn: `${widget.position.x + 1} / ${widget.position.x + widget.position.width + 1}`,
+                        gridRow: `${widget.position.y + 1} / ${widget.position.y + widget.position.height + 1}`,
+                    };
+                },
+
+                renderChart(widget) {
+                    const canvas = document.getElementById(`chart-${widget.id}`);
+                    if (!canvas) return;
+
+                    const ctx = canvas.getContext('2d');
+                    
+                    // Sample data
+                    const data = {
+                        labels: ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun'],
+                        datasets: [{
+                            label: 'Sample Data',
+                            data: [12, 19, 3, 5, 2, 3],
+                            backgroundColor: widget.config.chartType === 'pie' 
+                                ? ['#FF6384', '#36A2EB', '#FFCE56', '#4BC0C0', '#9966FF', '#FF9F40']
+                                : 'rgba(54, 162, 235, 0.2)',
+                            borderColor: 'rgba(54, 162, 235, 1)',
+                            borderWidth: 1
+                        }]
+                    };
+
+                    new Chart(ctx, {
+                        type: widget.config.chartType,
+                        data: data,
+                        options: {
+                            responsive: true,
+                            maintainAspectRatio: false,
+                            scales: widget.config.chartType !== 'pie' ? {
+                                y: {
+                                    beginAtZero: true
+                                }
+                            } : {}
+                        }
+                    });
+                },
+
+                loadTemplate(templateId) {
+                    this.clearDashboard();
+                    
+                    const templates = {
+                        'website-analytics': [
+                            { type: 'metric', subtype: 'number', title: 'Total Visitors', x: 0, y: 0, width: 3, height: 2 },
+                            { type: 'metric', subtype: 'number', title: 'Page Views', x: 3, y: 0, width: 3, height: 2 },
+                            { type: 'metric', subtype: 'number', title: 'Bounce Rate', x: 6, y: 0, width: 3, height: 2 },
+                            { type: 'metric', subtype: 'number', title: 'Session Duration', x: 9, y: 0, width: 3, height: 2 },
+                            { type: 'chart', subtype: 'line', title: 'Traffic Over Time', x: 0, y: 2, width: 8, height: 4 },
+                            { type: 'table', subtype: 'data', title: 'Top Pages', x: 8, y: 2, width: 4, height: 4 },
+                        ],
+                        'business-intelligence': [
+                            { type: 'metric', subtype: 'number', title: 'Revenue', x: 0, y: 0, width: 3, height: 2 },
+                            { type: 'metric', subtype: 'number', title: 'Conversion Rate', x: 3, y: 0, width: 3, height: 2 },
+                            { type: 'metric', subtype: 'number', title: 'Active Users', x: 6, y: 0, width: 3, height: 2 },
+                            { type: 'metric', subtype: 'number', title: 'New Signups', x: 9, y: 0, width: 3, height: 2 },
+                            { type: 'chart', subtype: 'area', title: 'Revenue Trend', x: 0, y: 2, width: 6, height: 4 },
+                            { type: 'chart', subtype: 'pie', title: 'User Segments', x: 6, y: 2, width: 6, height: 4 },
+                        ],
+                    };
+
+                    const template = templates[templateId];
+                    if (template) {
+                        this.dashboardName = templateId === 'website-analytics' ? 'Website Analytics' : 'Business Intelligence';
+                        
+                        template.forEach(widgetTemplate => {
+                            const widget = {
+                                id: this.nextWidgetId++,
+                                type: widgetTemplate.type,
+                                title: widgetTemplate.title,
+                                position: {
+                                    x: widgetTemplate.x,
+                                    y: widgetTemplate.y,
+                                    width: widgetTemplate.width,
+                                    height: widgetTemplate.height,
+                                },
+                                config: {
+                                    chartType: widgetTemplate.subtype,
+                                    metric: widgetTemplate.type === 'metric' ? widgetTemplate.title : undefined,
+                                },
+                                data: widgetTemplate.type === 'metric' ? { value: Math.floor(Math.random() * 1000) } : {},
+                            };
+                            this.widgets.push(widget);
+                        });
+
+                        // Render charts
+                        this.$nextTick(() => {
+                            this.widgets.filter(w => w.type === 'chart').forEach(widget => {
+                                this.renderChart(widget);
+                            });
+                        });
+                    }
+                },
+
+                clearDashboard() {
+                    this.widgets = [];
+                    this.dashboardName = 'My Dashboard';
+                },
+
+                previewDashboard() {
+                    // In a real implementation, this would open a preview modal or new tab
+                    alert('Dashboard preview would open here');
+                },
+
+                saveDashboard() {
+                    const dashboard = {
+                        name: this.dashboardName,
+                        widgets: this.widgets,
+                        layout: { type: 'grid', columns: this.gridColumns },
+                        createdAt: new Date().toISOString(),
+                    };
+
+                    // In a real implementation, this would save to the backend
+                    console.log('Saving dashboard:', dashboard);
+                    alert('Dashboard saved successfully!');
+                },
+
+                handleDrop(event) {
+                    event.preventDefault();
+                    // Handle drag and drop logic here
+                },
+            },
+        }).mount('#app');
+    </script>
+</body>
+</html>

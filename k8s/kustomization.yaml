@@ -1,0 +1,73 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: zoptal
+
+resources:
+  # Namespace and RBAC
+  - namespace.yaml
+  - rbac.yaml
+  
+  # Configuration
+  - configmap.yaml
+  - secrets.yaml
+  
+  # Databases
+  - database/postgres.yaml
+  - database/redis.yaml
+  - database/clickhouse.yaml
+  
+  # Backend Services
+  - services/auth-service.yaml
+  - services/project-service.yaml
+  - services/ai-service.yaml
+  - services/billing-service.yaml
+  - services/notification-service.yaml
+  - services/analytics-service.yaml
+  
+  # Frontend Applications
+  - frontend/web-main.yaml
+  
+  # Networking
+  - networking/ingress.yaml
+  - networking/network-policies.yaml
+
+commonLabels:
+  app.kubernetes.io/name: zoptal
+  app.kubernetes.io/instance: production
+  app.kubernetes.io/version: "1.0.0"
+  app.kubernetes.io/component: microservice
+  app.kubernetes.io/part-of: zoptal-platform
+  app.kubernetes.io/managed-by: kustomize
+
+commonAnnotations:
+  deployment.kubernetes.io/revision: "1"
+  kubectl.kubernetes.io/last-applied-configuration: ""
+
+images:
+  - name: zoptal/auth-service
+    newTag: latest
+  - name: zoptal/project-service
+    newTag: latest
+  - name: zoptal/ai-service
+    newTag: latest
+  - name: zoptal/billing-service
+    newTag: latest
+  - name: zoptal/notification-service
+    newTag: latest
+  - name: zoptal/analytics-service
+    newTag: latest
+  - name: zoptal/web-main
+    newTag: latest
+
+patchesStrategicMerge:
+  - patches/resource-limits.yaml
+
+patches:
+  - target:
+      kind: Deployment
+      labelSelector: "component=backend"
+    patch: |-
+      - op: add
+        path: /spec/template/spec/serviceAccountName
+        value: zoptal-service-account

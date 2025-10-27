@@ -1,0 +1,253 @@
+# Istio Service Mesh Configuration for Project Service
+
+apiVersion: networking.istio.io/v1beta1
+kind: VirtualService
+metadata:
+  name: project-service
+  namespace: zoptal-production
+spec:
+  hosts:
+  - project-service
+  - projects.zoptal.com
+  gateways:
+  - zoptal-gateway
+  - mesh
+  http:
+  - match:
+    - uri:
+        prefix: /api/projects
+    route:
+    - destination:
+        host: project-service
+        port:
+          number: 3002
+    timeout: 60s
+    retries:
+      attempts: 3
+      perTryTimeout: 20s
+      retryOn: 5xx,gateway-error,connect-failure,refused-stream
+    fault:
+      delay:
+        percentage:
+          value: 0.1
+        fixedDelay: 3s
+  - match:
+    - uri:
+        prefix: /api/files
+    route:
+    - destination:
+        host: project-service
+        port:
+          number: 3002
+    timeout: 120s
+    retries:
+      attempts: 2
+      perTryTimeout: 60s
+      retryOn: 5xx,gateway-error,connect-failure
+  - match:
+    - uri:
+        prefix: /health
+    route:
+    - destination:
+        host: project-service
+        port:
+          number: 3002
+    timeout: 5s
+
+---
+apiVersion: networking.istio.io/v1beta1
+kind: DestinationRule
+metadata:
+  name: project-service
+  namespace: zoptal-production
+spec:
+  host: project-service
+  trafficPolicy:
+    connectionPool:
+      tcp:
+        maxConnections: 100
+      http:
+        http1MaxPendingRequests: 20
+        maxRequestsPerConnection: 10
+        maxRetries: 3
+        consecutiveGatewayErrors: 5
+        interval: 30s
+        baseEjectionTime: 30s
+        maxEjectionPercent: 50
+    circuitBreaker:
+      consecutiveGatewayErrors: 5
+      consecutive5xxErrors: 5
+      interval: 30s
+      baseEjectionTime: 30s
+      maxEjectionPercent: 50
+    outlierDetection:
+      consecutiveGatewayErrors: 5
+      consecutive5xxErrors: 5
+      interval: 30s
+      baseEjectionTime: 30s
+      maxEjectionPercent: 50
+      minHealthPercent: 50
+  subsets:
+  - name: v1
+    labels:
+      version: v1
+  - name: v2
+    labels:
+      version: v2
+  - name: canary
+    labels:
+      track: canary
+  - name: stable
+    labels:
+      track: stable
+
+---
+apiVersion: security.istio.io/v1beta1
+kind: PeerAuthentication
+metadata:
+  name: project-service
+  namespace: zoptal-production
+spec:
+  selector:
+    matchLabels:
+      app: project-service
+  mtls:
+    mode: STRICT
+
+---
+apiVersion: security.istio.io/v1beta1
+kind: AuthorizationPolicy
+metadata:
+  name: project-service
+  namespace: zoptal-production
+spec:
+  selector:
+    matchLabels:
+      app: project-service
+  rules:
+  - from:
+    - source:
+        principals: ["cluster.local/ns/zoptal-production/sa/auth-service"]
+    - source:
+        principals: ["cluster.local/ns/istio-system/sa/istio-ingressgateway-service-account"]
+  - to:
+    - operation:
+        methods: ["GET"]
+        paths: ["/health", "/ready", "/metrics"]
+  - to:
+    - operation:
+        methods: ["GET", "POST", "PUT", "DELETE"]
+        paths: ["/api/projects/*", "/api/files/*"]
+    when:
+    - key: request.auth.claims[aud]
+      values: ["zoptal-api"]
+
+---
+# Rate limiting for project operations
+apiVersion: networking.istio.io/v1alpha3
+kind: EnvoyFilter
+metadata:
+  name: project-service-ratelimit
+  namespace: zoptal-production
+spec:
+  workloadSelector:
+    labels:
+      app: project-service
+  configPatches:
+  - applyTo: HTTP_FILTER
+    match:
+      context: SIDECAR_INBOUND
+      listener:
+        filterChain:
+          filter:
+            name: "envoy.filters.network.http_connection_manager"
+    patch:
+      operation: INSERT_BEFORE
+      value:
+        name: envoy.filters.http.local_ratelimit
+        typed_config:
+          "@type": type.googleapis.com/udpa.type.v1.TypedStruct
+          type_url: type.googleapis.com/envoy.extensions.filters.http.local_ratelimit.v3.LocalRateLimit
+          value:
+            stat_prefix: project_service_rate_limiter
+            token_bucket:
+              max_tokens: 200
+              tokens_per_fill: 50
+              fill_interval: 60s
+            filter_enabled:
+              runtime_key: local_rate_limit_enabled
+              default_value:
+                numerator: 100
+                denominator: HUNDRED
+            filter_enforced:
+              runtime_key: local_rate_limit_enforced
+              default_value:
+                numerator: 100
+                denominator: HUNDRED
+
+---
+# File upload rate limiting
+apiVersion: networking.istio.io/v1alpha3
+kind: EnvoyFilter
+metadata:
+  name: project-service-upload-ratelimit
+  namespace: zoptal-production
+spec:
+  workloadSelector:
+    labels:
+      app: project-service
+  configPatches:
+  - applyTo: HTTP_ROUTE
+    match:
+      context: SIDECAR_INBOUND
+      routeConfiguration:
+        vhost:
+          route:
+            match:
+              prefix: "/api/files/upload"
+    patch:
+      operation: MERGE
+      value:
+        route:
+          rate_limits:
+          - stage: 0
+            actions:
+            - source_cluster: {}
+        typed_per_filter_config:
+          envoy.filters.http.local_ratelimit:
+            "@type": type.googleapis.com/udpa.type.v1.TypedStruct
+            type_url: type.googleapis.com/envoy.extensions.filters.http.local_ratelimit.v3.LocalRateLimit
+            value:
+              stat_prefix: file_upload_rate_limiter
+              token_bucket:
+                max_tokens: 10
+                tokens_per_fill: 2
+                fill_interval: 60s
+
+---
+apiVersion: telemetry.istio.io/v1alpha1
+kind: Telemetry
+metadata:
+  name: project-service
+  namespace: zoptal-production
+spec:
+  selector:
+    matchLabels:
+      app: project-service
+  metrics:
+  - providers:
+    - name: prometheus
+  - overrides:
+    - match:
+        metric: requests_total
+      tagOverrides:
+        request_protocol:
+          value: "http"
+        service_name:
+          value: "project-service"
+  accessLogging:
+  - providers:
+    - name: otel
+  tracing:
+  - providers:
+    - name: jaeger

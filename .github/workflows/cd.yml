@@ -1,0 +1,471 @@
+name: Continuous Deployment
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  workflow_run:
+    workflows: ["Continuous Integration"]
+    types: [completed]
+    branches: [main]
+
+env:
+  NODE_VERSION: '18'
+  PNPM_VERSION: '8'
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
+jobs:
+  # Only run if CI passed
+  check-ci:
+    runs-on: ubuntu-latest
+    if: github.event_name == 'workflow_run'
+    outputs:
+      ci-passed: ${{ steps.check.outputs.ci-passed }}
+    steps:
+    - name: Check CI status
+      id: check
+      run: |
+        if [[ "${{ github.event.workflow_run.conclusion }}" == "success" ]]; then
+          echo "ci-passed=true" >> $GITHUB_OUTPUT
+        else
+          echo "ci-passed=false" >> $GITHUB_OUTPUT
+          exit 1
+        fi
+
+  # Build and push Docker images
+  build-and-push:
+    runs-on: ubuntu-latest
+    needs: [check-ci]
+    if: always() && (needs.check-ci.outputs.ci-passed == 'true' || github.event_name == 'push')
+    
+    permissions:
+      contents: read
+      packages: write
+
+    strategy:
+      matrix:
+        service:
+          - auth-service
+          - project-service
+          - ai-service
+          - billing-service
+          - notification-service
+          - admin
+          - web-main
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v3
+
+    - name: Log in to Container Registry
+      uses: docker/login-action@v3
+      with:
+        registry: ${{ env.REGISTRY }}
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+
+    - name: Extract metadata
+      id: meta
+      uses: docker/metadata-action@v5
+      with:
+        images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}/${{ matrix.service }}
+        tags: |
+          type=ref,event=branch
+          type=ref,event=pr
+          type=semver,pattern={{version}}
+          type=semver,pattern={{major}}.{{minor}}
+          type=sha,prefix={{branch}}-
+
+    - name: Build and push Docker image
+      uses: docker/build-push-action@v5
+      with:
+        context: .
+        file: ./services/${{ matrix.service }}/Dockerfile
+        push: true
+        tags: ${{ steps.meta.outputs.tags }}
+        labels: ${{ steps.meta.outputs.labels }}
+        cache-from: type=gha
+        cache-to: type=gha,mode=max
+        platforms: linux/amd64,linux/arm64
+
+    - name: Sign container image
+      uses: cosign/cosign-installer@v3
+    - name: Sign the published Docker image
+      env:
+        COSIGN_EXPERIMENTAL: 1
+      run: |
+        cosign sign --yes ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}/${{ matrix.service }}@${{ steps.meta.outputs.digest }}
+
+  # Deploy to staging environment
+  deploy-staging:
+    runs-on: ubuntu-latest
+    needs: [build-and-push]
+    if: github.ref == 'refs/heads/main'
+    environment: staging
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Setup kubectl
+      uses: azure/setup-kubectl@v3
+      with:
+        version: 'v1.28.0'
+
+    - name: Configure kubectl for staging
+      run: |
+        echo "${{ secrets.STAGING_KUBECONFIG }}" | base64 -d > kubeconfig
+        export KUBECONFIG=kubeconfig
+        kubectl config current-context
+
+    - name: Deploy to staging
+      run: |
+        export KUBECONFIG=kubeconfig
+        
+        # Update image tags in staging deployment
+        for service in auth-service project-service ai-service billing-service notification-service admin web-main; do
+          kubectl set image deployment/$service \
+            $service=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}/$service:main-${{ github.sha }} \
+            -n zoptal-staging
+        done
+        
+        # Wait for rollout to complete
+        for service in auth-service project-service ai-service billing-service notification-service admin web-main; do
+          kubectl rollout status deployment/$service -n zoptal-staging --timeout=300s
+        done
+
+    - name: Run smoke tests against staging
+      run: |
+        # Wait for services to be ready
+        sleep 30
+        
+        # Run basic health checks
+        curl -f https://staging.zoptal.com/api/health || exit 1
+        curl -f https://staging-app.zoptal.com/api/health || exit 1
+        
+        # Run smoke tests
+        pnpm install --frozen-lockfile
+        pnpm run test:smoke --env=staging
+      env:
+        STAGING_API_URL: https://staging.zoptal.com/api
+        STAGING_APP_URL: https://staging-app.zoptal.com
+
+    - name: Notify deployment status
+      if: always()
+      uses: 8398a7/action-slack@v3
+      with:
+        status: ${{ job.status }}
+        channel: '#deployments'
+        webhook_url: ${{ secrets.SLACK_WEBHOOK }}
+        fields: repo,message,commit,author,action,eventName,ref,workflow
+        text: |
+          Staging deployment ${{ job.status }}
+          Branch: ${{ github.ref_name }}
+          Commit: ${{ github.sha }}
+
+  # Run comprehensive tests against staging
+  staging-tests:
+    runs-on: ubuntu-latest
+    needs: [deploy-staging]
+    environment: staging
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: ${{ env.NODE_VERSION }}
+
+    - name: Setup pnpm
+      uses: pnpm/action-setup@v2
+      with:
+        version: ${{ env.PNPM_VERSION }}
+
+    - name: Install dependencies
+      run: pnpm install --frozen-lockfile
+
+    - name: Run API tests against staging
+      run: pnpm run test:api --env=staging
+      env:
+        STAGING_API_URL: https://staging.zoptal.com/api
+        TEST_USER_EMAIL: ${{ secrets.TEST_USER_EMAIL }}
+        TEST_USER_PASSWORD: ${{ secrets.TEST_USER_PASSWORD }}
+
+    - name: Run E2E tests against staging
+      run: pnpm run test:e2e --env=staging
+      env:
+        STAGING_APP_URL: https://staging-app.zoptal.com
+        TEST_USER_EMAIL: ${{ secrets.TEST_USER_EMAIL }}
+        TEST_USER_PASSWORD: ${{ secrets.TEST_USER_PASSWORD }}
+
+    - name: Run performance tests
+      run: pnpm run test:performance --env=staging
+      env:
+        STAGING_API_URL: https://staging.zoptal.com/api
+
+    - name: Generate test report
+      if: always()
+      run: |
+        pnpm run test:report
+        
+    - name: Upload test results
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: staging-test-results
+        path: test-results/
+        retention-days: 7
+
+  # Deploy to production with blue-green strategy
+  deploy-production:
+    runs-on: ubuntu-latest
+    needs: [staging-tests]
+    if: github.ref == 'refs/heads/main' && success()
+    environment: production
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Setup kubectl
+      uses: azure/setup-kubectl@v3
+      with:
+        version: 'v1.28.0'
+
+    - name: Configure kubectl for production
+      run: |
+        echo "${{ secrets.PRODUCTION_KUBECONFIG }}" | base64 -d > kubeconfig
+        export KUBECONFIG=kubeconfig
+        kubectl config current-context
+
+    - name: Create deployment backup
+      run: |
+        export KUBECONFIG=kubeconfig
+        
+        # Backup current deployment state
+        kubectl get deployments -n zoptal-production -o yaml > deployment-backup.yaml
+        
+        # Store backup as artifact
+        echo "BACKUP_DATE=$(date -u +%Y-%m-%d-%H-%M-%S)" >> $GITHUB_ENV
+
+    - name: Deploy to production (Blue-Green)
+      id: deploy
+      run: |
+        export KUBECONFIG=kubeconfig
+        
+        # Deploy new version
+        for service in auth-service project-service ai-service billing-service notification-service admin web-main; do
+          echo "Deploying $service..."
+          
+          # Update image with new tag
+          kubectl set image deployment/$service \
+            $service=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}/$service:main-${{ github.sha }} \
+            -n zoptal-production
+          
+          # Wait for rollout
+          kubectl rollout status deployment/$service -n zoptal-production --timeout=600s
+          
+          echo "$service deployed successfully"
+        done
+
+    - name: Run production health checks
+      run: |
+        export KUBECONFIG=kubeconfig
+        
+        # Wait for services to stabilize
+        sleep 60
+        
+        # Health check all services
+        for service in auth-service project-service ai-service billing-service notification-service; do
+          kubectl exec -n zoptal-production deployment/$service -- curl -f http://localhost:4001/health || exit 1
+        done
+        
+        # Health check frontend apps
+        curl -f https://zoptal.com/api/health || exit 1
+        curl -f https://app.zoptal.com/api/health || exit 1
+        curl -f https://admin.zoptal.com/api/health || exit 1
+
+    - name: Run production smoke tests
+      run: |
+        # Basic functionality tests
+        pnpm install --frozen-lockfile
+        pnpm run test:smoke --env=production
+      env:
+        PRODUCTION_API_URL: https://api.zoptal.com
+        PRODUCTION_APP_URL: https://app.zoptal.com
+
+    - name: Rollback on failure
+      if: failure()
+      run: |
+        export KUBECONFIG=kubeconfig
+        
+        echo "Deployment failed, rolling back..."
+        
+        # Rollback all services
+        for service in auth-service project-service ai-service billing-service notification-service admin web-main; do
+          kubectl rollout undo deployment/$service -n zoptal-production
+          kubectl rollout status deployment/$service -n zoptal-production --timeout=300s
+        done
+        
+        echo "Rollback completed"
+
+    - name: Upload deployment backup
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: deployment-backup-${{ env.BACKUP_DATE }}
+        path: deployment-backup.yaml
+        retention-days: 30
+
+    - name: Notify production deployment
+      if: always()
+      uses: 8398a7/action-slack@v3
+      with:
+        status: ${{ job.status }}
+        channel: '#deployments'
+        webhook_url: ${{ secrets.SLACK_WEBHOOK }}
+        fields: repo,message,commit,author,action,eventName,ref,workflow
+        text: |
+          🚀 Production deployment ${{ job.status }}
+          Branch: ${{ github.ref_name }}
+          Commit: ${{ github.sha }}
+          Images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}/*:main-${{ github.sha }}
+
+  # Post-deployment monitoring and alerts
+  post-deployment:
+    runs-on: ubuntu-latest
+    needs: [deploy-production]
+    if: success()
+    
+    steps:
+    - name: Setup monitoring alerts
+      run: |
+        # Enable enhanced monitoring for 2 hours post-deployment
+        curl -X POST "${{ secrets.PROMETHEUS_WEBHOOK }}" \
+          -H "Content-Type: application/json" \
+          -d '{
+            "receiver": "deployment-monitor",
+            "status": "firing",
+            "alerts": [{
+              "status": "firing",
+              "labels": {
+                "alertname": "PostDeploymentMonitoring",
+                "severity": "info",
+                "deployment": "${{ github.sha }}"
+              },
+              "annotations": {
+                "summary": "Enhanced monitoring enabled for 2 hours",
+                "description": "Monitoring deployment ${{ github.sha }}"
+              }
+            }]
+          }'
+
+    - name: Update deployment tracking
+      run: |
+        # Record successful deployment
+        curl -X POST "${{ secrets.DEPLOYMENT_TRACKER_URL }}" \
+          -H "Content-Type: application/json" \
+          -H "Authorization: Bearer ${{ secrets.DEPLOYMENT_TRACKER_TOKEN }}" \
+          -d '{
+            "environment": "production",
+            "version": "${{ github.sha }}",
+            "timestamp": "'$(date -u +%Y-%m-%dT%H:%M:%SZ)'",
+            "status": "success",
+            "services": [
+              "auth-service", "project-service", "ai-service",
+              "billing-service", "notification-service",
+              "admin", "web-main"
+            ]
+          }'
+
+    - name: Create GitHub release
+      if: startsWith(github.ref, 'refs/tags/')
+      uses: actions/create-release@v1
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        tag_name: ${{ github.ref }}
+        release_name: Release ${{ github.ref }}
+        body: |
+          ## Changes in this Release
+          
+          - Deployed to production: ${{ github.sha }}
+          - Docker images: `${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}/*:${{ github.ref_name }}`
+          
+          ## Deployment Status
+          
+          ✅ All services deployed successfully
+          ✅ Health checks passed
+          ✅ Smoke tests passed
+          
+          ## Services Updated
+          
+          - Authentication Service
+          - Project Service  
+          - AI Service
+          - Billing Service
+          - Notification Service
+          - Dashboard App
+          - Admin App
+          - Main Website
+          
+        draft: false
+        prerelease: false
+
+  # Security scan post-deployment
+  security-scan-production:
+    runs-on: ubuntu-latest
+    needs: [deploy-production]
+    if: success()
+    
+    steps:
+    - name: Run OWASP ZAP security scan
+      uses: zaproxy/action-full-scan@v0.4.0
+      with:
+        target: 'https://zoptal.com'
+        rules_file_name: '.zap/rules.tsv'
+        cmd_options: '-a'
+
+    - name: Upload ZAP scan results
+      uses: actions/upload-artifact@v4
+      if: always()
+      with:
+        name: zap-scan-results
+        path: report_html.html
+        retention-days: 7
+
+  # Performance monitoring post-deployment
+  performance-monitoring:
+    runs-on: ubuntu-latest
+    needs: [deploy-production]
+    if: success()
+    
+    steps:
+    - name: Run Lighthouse audit on production
+      uses: treosh/lighthouse-ci-action@v9
+      with:
+        urls: |
+          https://zoptal.com
+          https://app.zoptal.com
+          https://admin.zoptal.com
+        uploadArtifacts: true
+        temporaryPublicStorage: true
+
+    - name: Monitor API response times
+      run: |
+        # Run performance monitoring for 10 minutes
+        for i in {1..10}; do
+          echo "Performance check $i/10..."
+          
+          # Test API endpoints
+          time curl -s https://api.zoptal.com/health
+          time curl -s https://api.zoptal.com/auth/status
+          
+          sleep 60
+        done

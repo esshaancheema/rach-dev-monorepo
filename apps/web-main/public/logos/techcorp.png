@@ -1,0 +1,6 @@
+<svg width="200" height="80" viewBox="0 0 200 80" xmlns="http://www.w3.org/2000/svg">
+  <rect width="200" height="80" fill="#1F2937"/>
+  <text x="100" y="45" text-anchor="middle" fill="white" font-size="24" font-weight="bold" font-family="Arial, sans-serif">TechCorp</text>
+  <circle cx="30" cy="40" r="15" fill="#3B82F6"/>
+  <circle cx="170" cy="40" r="15" fill="#3B82F6"/>
+</svg>

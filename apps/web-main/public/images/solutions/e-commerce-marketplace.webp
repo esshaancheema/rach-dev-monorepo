@@ -1,0 +1,50 @@
+<svg width="800" height="600" viewBox="0 0 800 600" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="ecommerce-bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#10B981;stop-opacity:0.9" />
+      <stop offset="100%" style="stop-color:#047857;stop-opacity:0.9" />
+    </linearGradient>
+  </defs>
+  <rect width="800" height="600" fill="url(#ecommerce-bg)"/>
+  
+  <!-- E-commerce Elements -->
+  <g transform="translate(400,300)">
+    <!-- Shopping Cart -->
+    <rect x="-40" y="-40" width="80" height="60" rx="8" fill="white" stroke="#047857" stroke-width="3"/>
+    <circle cx="-15" cy="35" r="8" fill="#047857"/>
+    <circle cx="15" cy="35" r="8" fill="#047857"/>
+    <rect x="-30" y="-30" width="60" height="40" fill="#F0FDF4"/>
+    
+    <!-- Product Items -->
+    <rect x="-140" y="-100" width="50" height="60" rx="8" fill="white" stroke="#047857" stroke-width="2"/>
+    <rect x="-135" y="-90" width="40" height="30" fill="#10B981" opacity="0.3"/>
+    <text x="-115" y="-65" text-anchor="middle" fill="#047857" font-size="14" font-weight="bold">$49</text>
+    
+    <rect x="90" y="-100" width="50" height="60" rx="8" fill="white" stroke="#047857" stroke-width="2"/>
+    <rect x="95" y="-90" width="40" height="30" fill="#10B981" opacity="0.3"/>
+    <text x="115" y="-65" text-anchor="middle" fill="#047857" font-size="14" font-weight="bold">$89</text>
+    
+    <rect x="-25" y="-140" width="50" height="60" rx="8" fill="white" stroke="#047857" stroke-width="2"/>
+    <rect x="-20" y="-130" width="40" height="30" fill="#10B981" opacity="0.3"/>
+    <text x="0" y="-105" text-anchor="middle" fill="#047857" font-size="14" font-weight="bold">$29</text>
+    
+    <!-- Connection Lines -->
+    <path d="M -115,-40 Q -70,-20 -40,0" stroke="#047857" stroke-width="2" fill="none" opacity="0.7"/>
+    <path d="M 115,-40 Q 70,-20 40,0" stroke="#047857" stroke-width="2" fill="none" opacity="0.7"/>
+    <path d="M 0,-80 Q 0,-50 0,-40" stroke="#047857" stroke-width="2" fill="none" opacity="0.7"/>
+    
+    <!-- Stars for ratings -->
+    <g transform="translate(-115,-50)">
+      <text fill="#FCD34D" font-size="12">⭐⭐⭐⭐⭐</text>
+    </g>
+    <g transform="translate(85,-50)">
+      <text fill="#FCD34D" font-size="12">⭐⭐⭐⭐⭐</text>
+    </g>
+    <g transform="translate(-25,-90)">
+      <text fill="#FCD34D" font-size="12">⭐⭐⭐⭐⭐</text>
+    </g>
+  </g>
+  
+  <text x="400" y="450" text-anchor="middle" fill="white" font-size="36" font-weight="bold">E-commerce Marketplace</text>
+  <text x="400" y="490" text-anchor="middle" fill="white" opacity="0.8" font-size="18">Shop • Compare • Buy • Review</text>
+</svg>

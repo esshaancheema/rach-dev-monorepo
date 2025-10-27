@@ -1,0 +1,268 @@
+# Istio Service Mesh Configuration for Notification Service
+
+apiVersion: networking.istio.io/v1beta1
+kind: VirtualService
+metadata:
+  name: notification-service
+  namespace: zoptal-production
+spec:
+  hosts:
+  - notification-service
+  - notifications.zoptal.com
+  gateways:
+  - zoptal-gateway
+  - mesh
+  http:
+  - match:
+    - uri:
+        prefix: /api/notifications
+    route:
+    - destination:
+        host: notification-service
+        port:
+          number: 3004
+    timeout: 30s
+    retries:
+      attempts: 3
+      perTryTimeout: 10s
+      retryOn: 5xx,gateway-error,connect-failure,refused-stream
+    fault:
+      delay:
+        percentage:
+          value: 0.1
+        fixedDelay: 2s
+  - match:
+    - uri:
+        prefix: /health
+    route:
+    - destination:
+        host: notification-service
+        port:
+          number: 3004
+    timeout: 5s
+
+---
+apiVersion: networking.istio.io/v1beta1
+kind: DestinationRule
+metadata:
+  name: notification-service
+  namespace: zoptal-production
+spec:
+  host: notification-service
+  trafficPolicy:
+    connectionPool:
+      tcp:
+        maxConnections: 75
+      http:
+        http1MaxPendingRequests: 15
+        maxRequestsPerConnection: 10
+        maxRetries: 3
+        consecutiveGatewayErrors: 5
+        interval: 30s
+        baseEjectionTime: 30s
+        maxEjectionPercent: 50
+    circuitBreaker:
+      consecutiveGatewayErrors: 5
+      consecutive5xxErrors: 5
+      interval: 30s
+      baseEjectionTime: 30s
+      maxEjectionPercent: 50
+    outlierDetection:
+      consecutiveGatewayErrors: 5
+      consecutive5xxErrors: 5
+      interval: 30s
+      baseEjectionTime: 30s
+      maxEjectionPercent: 50
+      minHealthPercent: 50
+  subsets:
+  - name: v1
+    labels:
+      version: v1
+  - name: v2
+    labels:
+      version: v2
+  - name: canary
+    labels:
+      track: canary
+  - name: stable
+    labels:
+      track: stable
+
+---
+apiVersion: security.istio.io/v1beta1
+kind: PeerAuthentication
+metadata:
+  name: notification-service
+  namespace: zoptal-production
+spec:
+  selector:
+    matchLabels:
+      app: notification-service
+  mtls:
+    mode: STRICT
+
+---
+apiVersion: security.istio.io/v1beta1
+kind: AuthorizationPolicy
+metadata:
+  name: notification-service
+  namespace: zoptal-production
+spec:
+  selector:
+    matchLabels:
+      app: notification-service
+  rules:
+  - from:
+    - source:
+        principals: ["cluster.local/ns/zoptal-production/sa/auth-service"]
+    - source:
+        principals: ["cluster.local/ns/zoptal-production/sa/project-service"]
+    - source:
+        principals: ["cluster.local/ns/zoptal-production/sa/billing-service"]
+    - source:
+        principals: ["cluster.local/ns/istio-system/sa/istio-ingressgateway-service-account"]
+  - to:
+    - operation:
+        methods: ["GET"]
+        paths: ["/health", "/ready", "/metrics"]
+  - to:
+    - operation:
+        methods: ["GET", "POST", "PUT", "DELETE"]
+        paths: ["/api/notifications/*"]
+    when:
+    - key: request.auth.claims[aud]
+      values: ["zoptal-api"]
+
+---
+# External service entries for email and SMS providers
+apiVersion: networking.istio.io/v1beta1
+kind: ServiceEntry
+metadata:
+  name: notification-external-services
+  namespace: zoptal-production
+spec:
+  hosts:
+  - smtp.gmail.com
+  - smtp.sendgrid.net
+  - api.twilio.com
+  - api.mailgun.net
+  ports:
+  - number: 587
+    name: smtp
+    protocol: TCP
+  - number: 465
+    name: smtps
+    protocol: TCP
+  - number: 443
+    name: https
+    protocol: HTTPS
+  location: MESH_EXTERNAL
+  resolution: DNS
+
+---
+# Rate limiting for notification sending
+apiVersion: networking.istio.io/v1alpha3
+kind: EnvoyFilter
+metadata:
+  name: notification-service-ratelimit
+  namespace: zoptal-production
+spec:
+  workloadSelector:
+    labels:
+      app: notification-service
+  configPatches:
+  - applyTo: HTTP_FILTER
+    match:
+      context: SIDECAR_INBOUND
+      listener:
+        filterChain:
+          filter:
+            name: "envoy.filters.network.http_connection_manager"
+    patch:
+      operation: INSERT_BEFORE
+      value:
+        name: envoy.filters.http.local_ratelimit
+        typed_config:
+          "@type": type.googleapis.com/udpa.type.v1.TypedStruct
+          type_url: type.googleapis.com/envoy.extensions.filters.http.local_ratelimit.v3.LocalRateLimit
+          value:
+            stat_prefix: notification_service_rate_limiter
+            token_bucket:
+              max_tokens: 100
+              tokens_per_fill: 20
+              fill_interval: 60s
+            filter_enabled:
+              runtime_key: local_rate_limit_enabled
+              default_value:
+                numerator: 100
+                denominator: HUNDRED
+            filter_enforced:
+              runtime_key: local_rate_limit_enforced
+              default_value:
+                numerator: 100
+                denominator: HUNDRED
+
+---
+# Bulk notification rate limiting
+apiVersion: networking.istio.io/v1alpha3
+kind: EnvoyFilter
+metadata:
+  name: notification-bulk-ratelimit
+  namespace: zoptal-production
+spec:
+  workloadSelector:
+    labels:
+      app: notification-service
+  configPatches:
+  - applyTo: HTTP_ROUTE
+    match:
+      context: SIDECAR_INBOUND
+      routeConfiguration:
+        vhost:
+          route:
+            match:
+              prefix: "/api/notifications/bulk"
+    patch:
+      operation: MERGE
+      value:
+        typed_per_filter_config:
+          envoy.filters.http.local_ratelimit:
+            "@type": type.googleapis.com/udpa.type.v1.TypedStruct
+            type_url: type.googleapis.com/envoy.extensions.filters.http.local_ratelimit.v3.LocalRateLimit
+            value:
+              stat_prefix: bulk_notification_rate_limiter
+              token_bucket:
+                max_tokens: 5
+                tokens_per_fill: 1
+                fill_interval: 300s
+
+---
+apiVersion: telemetry.istio.io/v1alpha1
+kind: Telemetry
+metadata:
+  name: notification-service
+  namespace: zoptal-production
+spec:
+  selector:
+    matchLabels:
+      app: notification-service
+  metrics:
+  - providers:
+    - name: prometheus
+  - overrides:
+    - match:
+        metric: requests_total
+      tagOverrides:
+        request_protocol:
+          value: "http"
+        service_name:
+          value: "notification-service"
+        notification_type:
+          operation: UPSERT
+          value: "{{.request.headers['x-notification-type'] | default \"unknown\"}}"
+  accessLogging:
+  - providers:
+    - name: otel
+  tracing:
+  - providers:
+    - name: jaeger

@@ -1,0 +1,229 @@
+# Istio Installation Configuration
+# This file contains the configuration for installing Istio service mesh
+
+apiVersion: install.istio.io/v1alpha1
+kind: IstioOperator
+metadata:
+  name: zoptal-istio
+  namespace: istio-system
+spec:
+  values:
+    global:
+      meshID: zoptal-mesh
+      multiCluster:
+        clusterName: zoptal-production
+      network: zoptal-network
+    pilot:
+      env:
+        EXTERNAL_ISTIOD: false
+  components:
+    pilot:
+      k8s:
+        resources:
+          requests:
+            cpu: 200m
+            memory: 128Mi
+          limits:
+            cpu: 500m
+            memory: 512Mi
+        hpaSpec:
+          minReplicas: 2
+          maxReplicas: 5
+          metrics:
+          - type: Resource
+            resource:
+              name: cpu
+              target:
+                type: Utilization
+                averageUtilization: 80
+    ingressGateways:
+    - name: istio-ingressgateway
+      enabled: true
+      k8s:
+        resources:
+          requests:
+            cpu: 100m
+            memory: 128Mi
+          limits:
+            cpu: 2000m
+            memory: 1024Mi
+        hpaSpec:
+          minReplicas: 2
+          maxReplicas: 5
+        service:
+          type: LoadBalancer
+          ports:
+          - port: 15021
+            targetPort: 15021
+            name: status-port
+          - port: 80
+            targetPort: 8080
+            name: http2
+          - port: 443
+            targetPort: 8443
+            name: https
+          - port: 31400
+            targetPort: 31400
+            name: tcp
+          - port: 15443
+            targetPort: 15443
+            name: tls
+    egressGateways:
+    - name: istio-egressgateway
+      enabled: true
+      k8s:
+        resources:
+          requests:
+            cpu: 100m
+            memory: 128Mi
+          limits:
+            cpu: 200m
+            memory: 256Mi
+        hpaSpec:
+          minReplicas: 1
+          maxReplicas: 3
+  meshConfig:
+    accessLogFile: /dev/stdout
+    defaultConfig:
+      proxyStatsMatcher:
+        inclusionRegexps:
+        - ".*outlier_detection.*"
+        - ".*circuit_breakers.*"
+        - ".*upstream_rq_retry.*"
+        - ".*upstream_rq_pending.*"
+        - ".*_cx_.*"
+      gatewayTopology:
+        numTrustedProxies: 2
+    extensionProviders:
+    - name: prometheus
+      prometheus:
+        configOverride:
+          metric_relabeling_configs:
+          - source_labels: [__name__]
+            regex: 'istio_.*'
+            target_label: __tmp_istio_metric
+    - name: jaeger
+      envoyOtelAls:
+        service: jaeger.istio-system.svc.cluster.local
+        port: 14250
+    - name: otel
+      envoyOtelAls:
+        service: opentelemetry-collector.istio-system.svc.cluster.local
+        port: 4317
+
+---
+# Istio Gateway for external traffic
+apiVersion: networking.istio.io/v1beta1
+kind: Gateway
+metadata:
+  name: zoptal-gateway
+  namespace: istio-system
+spec:
+  selector:
+    istio: ingressgateway
+  servers:
+  - port:
+      number: 80
+      name: http
+      protocol: HTTP
+    hosts:
+    - "*.zoptal.com"
+    - "zoptal.com"
+    tls:
+      httpsRedirect: true
+  - port:
+      number: 443
+      name: https
+      protocol: HTTPS
+    tls:
+      mode: SIMPLE
+      credentialName: zoptal-tls-secret
+    hosts:
+    - "*.zoptal.com"
+    - "zoptal.com"
+
+---
+# Default destination rule for all services
+apiVersion: networking.istio.io/v1beta1
+kind: DestinationRule
+metadata:
+  name: default
+  namespace: istio-system
+spec:
+  host: "*.local"
+  trafficPolicy:
+    connectionPool:
+      tcp:
+        maxConnections: 10
+      http:
+        http1MaxPendingRequests: 10
+        maxRequestsPerConnection: 2
+        maxRetries: 3
+        consecutiveGatewayErrors: 5
+        interval: 30s
+        baseEjectionTime: 30s
+        maxEjectionPercent: 50
+        minHealthPercent: 50
+    circuitBreaker:
+      consecutiveGatewayErrors: 5
+      consecutive5xxErrors: 5
+      interval: 30s
+      baseEjectionTime: 30s
+      maxEjectionPercent: 50
+    outlierDetection:
+      consecutiveGatewayErrors: 5
+      consecutive5xxErrors: 5
+      interval: 30s
+      baseEjectionTime: 30s
+      maxEjectionPercent: 50
+
+---
+# Service mesh policy for mutual TLS
+apiVersion: security.istio.io/v1beta1
+kind: PeerAuthentication
+metadata:
+  name: default
+  namespace: istio-system
+spec:
+  mtls:
+    mode: STRICT
+
+---
+# Authorization policy for all services
+apiVersion: security.istio.io/v1beta1
+kind: AuthorizationPolicy
+metadata:
+  name: allow-all
+  namespace: istio-system
+spec:
+  action: ALLOW
+  rules:
+  - {}
+
+---
+# Telemetry configuration
+apiVersion: telemetry.istio.io/v1alpha1
+kind: Telemetry
+metadata:
+  name: default
+  namespace: istio-system
+spec:
+  metrics:
+  - providers:
+    - name: prometheus
+  - overrides:
+    - match:
+        metric: ALL_METRICS
+      tagOverrides:
+        destination_app:
+          operation: UPSERT
+          value: "{{.destination_app | default \"unknown\"}}"
+        source_app:
+          operation: UPSERT
+          value: "{{.source_app | default \"unknown\"}}"
+  accessLogging:
+  - providers:
+    - name: otel
+  tracing:
+  - providers:
+    - name: jaeger

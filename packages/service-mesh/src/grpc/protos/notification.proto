@@ -1,0 +1,248 @@
+syntax = "proto3";
+
+package zoptal.notification.v1;
+
+option go_package = "github.com/zoptal/service-mesh/gen/go/notification/v1";
+
+import "google/protobuf/timestamp.proto";
+import "google/protobuf/empty.proto";
+import "google/protobuf/struct.proto";
+
+// Notification Service - Internal gRPC API
+service NotificationService {
+  // Send email notification
+  rpc SendEmail(SendEmailRequest) returns (SendEmailResponse);
+  
+  // Send SMS notification
+  rpc SendSMS(SendSMSRequest) returns (SendSMSResponse);
+  
+  // Send push notification
+  rpc SendPushNotification(SendPushNotificationRequest) returns (SendPushNotificationResponse);
+  
+  // Send bulk notifications
+  rpc SendBulkNotification(SendBulkNotificationRequest) returns (SendBulkNotificationResponse);
+  
+  // Get notification templates
+  rpc GetNotificationTemplate(GetNotificationTemplateRequest) returns (GetNotificationTemplateResponse);
+  
+  // Get notification history
+  rpc GetNotificationHistory(GetNotificationHistoryRequest) returns (GetNotificationHistoryResponse);
+  
+  // Check notification preferences
+  rpc GetUserNotificationPreferences(GetUserNotificationPreferencesRequest) returns (GetUserNotificationPreferencesResponse);
+  
+  // Health check
+  rpc HealthCheck(google.protobuf.Empty) returns (HealthCheckResponse);
+}
+
+// Email notifications
+message SendEmailRequest {
+  string to = 1;
+  string from = 2; // Optional, uses default if not provided
+  string subject = 3;
+  string html_content = 4;
+  string text_content = 5; // Optional fallback
+  repeated string cc = 6;
+  repeated string bcc = 7;
+  repeated EmailAttachment attachments = 8;
+  string template_id = 9; // Optional: use template instead of content
+  google.protobuf.Struct template_variables = 10;
+  NotificationPriority priority = 11;
+  bool track_opens = 12;
+  bool track_clicks = 13;
+}
+
+message SendEmailResponse {
+  bool success = 1;
+  string message_id = 2;
+  string error_message = 3;
+}
+
+message EmailAttachment {
+  string filename = 1;
+  string content_type = 2;
+  bytes content = 3;
+  string content_id = 4; // For inline attachments
+}
+
+// SMS notifications
+message SendSMSRequest {
+  string to = 1; // Phone number in E.164 format
+  string message = 2;
+  string from = 3; // Optional, uses default if not provided
+  string template_id = 4; // Optional: use template
+  google.protobuf.Struct template_variables = 5;
+  NotificationPriority priority = 6;
+}
+
+message SendSMSResponse {
+  bool success = 1;
+  string message_id = 2;
+  string error_message = 3;
+}
+
+// Push notifications
+message SendPushNotificationRequest {
+  string user_id = 1;
+  string title = 2;
+  string body = 3;
+  string image_url = 4; // Optional
+  string action_url = 5; // Optional: URL to open when clicked
+  google.protobuf.Struct data = 6; // Custom data payload
+  string template_id = 7; // Optional: use template
+  google.protobuf.Struct template_variables = 8;
+  NotificationPriority priority = 9;
+  int32 ttl = 10; // Time to live in seconds
+}
+
+message SendPushNotificationResponse {
+  bool success = 1;
+  string message_id = 2;
+  int32 delivered_count = 3;
+  int32 failed_count = 4;
+  string error_message = 5;
+}
+
+// Bulk notifications
+message SendBulkNotificationRequest {
+  repeated string recipients = 1; // User IDs or email addresses
+  NotificationType type = 2;
+  string subject = 3; // For email
+  string content = 4;
+  string template_id = 5;
+  google.protobuf.Struct template_variables = 6;
+  NotificationPriority priority = 7;
+  bool respect_preferences = 8; // Check user preferences before sending
+}
+
+message SendBulkNotificationResponse {
+  bool success = 1;
+  int32 total_recipients = 2;
+  int32 sent_count = 3;
+  int32 failed_count = 4;
+  int32 skipped_count = 5; // Skipped due to preferences
+  string error_message = 6;
+}
+
+// Template management
+message GetNotificationTemplateRequest {
+  string template_id = 1;
+  string language = 2; // Optional: for localized templates
+}
+
+message GetNotificationTemplateResponse {
+  NotificationTemplate template = 1;
+  string error_message = 2;
+}
+
+// Notification history
+message GetNotificationHistoryRequest {
+  string user_id = 1;
+  NotificationType type = 2; // Optional filter
+  google.protobuf.Timestamp start_date = 3;
+  google.protobuf.Timestamp end_date = 4;
+  int32 page = 5;
+  int32 limit = 6;
+}
+
+message GetNotificationHistoryResponse {
+  repeated NotificationRecord notifications = 1;
+  int32 total = 2;
+  int32 page = 3;
+  int32 limit = 4;
+  string error_message = 5;
+}
+
+// User preferences
+message GetUserNotificationPreferencesRequest {
+  string user_id = 1;
+}
+
+message GetUserNotificationPreferencesResponse {
+  NotificationPreferences preferences = 1;
+  string error_message = 2;
+}
+
+// Data models
+message NotificationTemplate {
+  string id = 1;
+  string name = 2;
+  NotificationType type = 3;
+  string subject = 4; // For email templates
+  string content = 5;
+  google.protobuf.Struct variables = 6; // Required variables
+  string language = 7;
+  bool active = 8;
+  google.protobuf.Timestamp created_at = 9;
+  google.protobuf.Timestamp updated_at = 10;
+}
+
+message NotificationRecord {
+  string id = 1;
+  string user_id = 2;
+  NotificationType type = 3;
+  string recipient = 4; // Email, phone, or user ID
+  string subject = 5;
+  string content = 6;
+  NotificationStatus status = 7;
+  string message_id = 8; // External service message ID
+  google.protobuf.Timestamp sent_at = 9;
+  google.protobuf.Timestamp delivered_at = 10;
+  google.protobuf.Timestamp opened_at = 11;
+  google.protobuf.Timestamp clicked_at = 12;
+  string error_message = 13;
+}
+
+message NotificationPreferences {
+  string user_id = 1;
+  bool email_enabled = 2;
+  bool sms_enabled = 3;
+  bool push_enabled = 4;
+  bool marketing_enabled = 5;
+  repeated string blocked_categories = 6;
+  string timezone = 7;
+  string language = 8;
+  bool quiet_hours_enabled = 9;
+  int32 quiet_hours_start = 10; // Hour in 24h format
+  int32 quiet_hours_end = 11;
+}
+
+enum NotificationType {
+  NOTIFICATION_TYPE_UNSPECIFIED = 0;
+  EMAIL = 1;
+  SMS = 2;
+  PUSH = 3;
+  IN_APP = 4;
+}
+
+enum NotificationPriority {
+  NOTIFICATION_PRIORITY_UNSPECIFIED = 0;
+  LOW = 1;
+  NORMAL = 2;
+  HIGH = 3;
+  URGENT = 4;
+}
+
+enum NotificationStatus {
+  NOTIFICATION_STATUS_UNSPECIFIED = 0;
+  PENDING = 1;
+  SENT = 2;
+  DELIVERED = 3;
+  OPENED = 4;
+  CLICKED = 5;
+  FAILED = 6;
+  BOUNCED = 7;
+  COMPLAINED = 8;
+}
+
+// Health check
+message HealthCheckResponse {
+  enum Status {
+    UNKNOWN = 0;
+    SERVING = 1;
+    NOT_SERVING = 2;
+    SERVICE_UNKNOWN = 3;
+  }
+  Status status = 1;
+  string message = 2;
+}

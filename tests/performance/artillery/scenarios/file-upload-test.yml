@@ -1,0 +1,444 @@
+# Artillery File Upload Performance Testing
+# Tests file upload performance, large file handling, and concurrent uploads
+
+config:
+  target: 'http://localhost:3001'
+  phases:
+    # Warm up with small files
+    - duration: 60
+      arrivalRate: 2
+      name: "Warm up - small files"
+    
+    # Medium file load
+    - duration: 180
+      arrivalRate: 5
+      name: "Medium file uploads"
+    
+    # Large file stress test
+    - duration: 120
+      arrivalRate: 3
+      name: "Large file uploads"
+    
+    # Concurrent upload burst
+    - duration: 60
+      arrivalRate: 10
+      name: "Concurrent upload burst"
+
+  # Timeout configuration for large files
+  timeout: 300  # 5 minutes for large uploads
+  
+  # Performance expectations
+  expect:
+    - statusCode: [200, 201]
+    - maxErrorRate: 8   # Higher tolerance for file uploads
+    - p95: 30000       # 95% under 30 seconds
+    - p99: 60000       # 99% under 60 seconds
+
+  # HTTP configuration
+  http:
+    timeout: 300
+    maxSockets: 20
+    keepAlive: true
+
+  # Environment variables
+  variables:
+    apiUrl: "{{ $processEnvironment.API_BASE_URL || 'http://localhost:3001' }}"
+    authToken: "{{ $processEnvironment.TEST_AUTH_TOKEN }}"
+    projectId: "{{ $processEnvironment.TEST_PROJECT_ID }}"
+    maxFileSize: "{{ $processEnvironment.MAX_FILE_SIZE || '10485760' }}"  # 10MB default
+
+  # Plugins
+  plugins:
+    metrics-by-endpoint:
+      useOnlyRequestNames: true
+    ensure:
+      conditions:
+        - expression: "response.statusCode === 201"
+          strict: false
+
+# File upload scenarios
+scenarios:
+  # Small file uploads (< 1MB)
+  - name: "Small File Uploads"
+    weight: 40
+    flow:
+      # Authenticate
+      - post:
+          url: "/auth/login"
+          headers:
+            Content-Type: "application/json"
+          json:
+            email: "perftest@example.com"
+            password: "PerfTest123!"
+          capture:
+            - json: "$.tokens.accessToken"
+              as: "authToken"
+            - json: "$.user.id"
+              as: "userId"
+      
+      # Create test project if needed
+      - post:
+          url: "/projects"
+          headers:
+            Authorization: "Bearer {{ authToken }}"
+            Content-Type: "application/json"
+          json:
+            name: "File Upload Test Project {{ $randomString() }}"
+            template: "react-typescript"
+          capture:
+            - json: "$.project.id"
+              as: "projectId"
+      
+      # Upload small text files
+      - loop:
+          count: 5
+          flow:
+            - post:
+                url: "/projects/{{ projectId }}/files"
+                headers:
+                  Authorization: "Bearer {{ authToken }}"
+                  Content-Type: "application/json"
+                json:
+                  name: "small-file-{{ $randomString() }}.txt"
+                  content: "{{ generateSmallFileContent() }}"
+                  path: "/test-uploads"
+                  size: "{{ calculateSize(generateSmallFileContent()) }}"
+                expect:
+                  - statusCode: 201
+                  - hasProperty: "file.id"
+            - think: 1
+      
+      # Upload small code files
+      - loop:
+          count: 3
+          flow:
+            - post:
+                url: "/projects/{{ projectId }}/files"
+                headers:
+                  Authorization: "Bearer {{ authToken }}"
+                  Content-Type: "application/json"
+                json:
+                  name: "component-{{ $randomString() }}.tsx"
+                  content: "{{ generateReactComponent() }}"
+                  path: "/src/components"
+                  type: "typescript"
+                expect:
+                  - statusCode: 201
+            - think: 2
+
+  # Medium file uploads (1MB - 5MB)
+  - name: "Medium File Uploads" 
+    weight: 35
+    flow:
+      # Authenticate
+      - post:
+          url: "/auth/login"
+          headers:
+            Content-Type: "application/json"
+          json:
+            email: "perftest@example.com"
+            password: "PerfTest123!"
+          capture:
+            - json: "$.tokens.accessToken"
+              as: "authToken"
+            - json: "$.user.id" 
+              as: "userId"
+      
+      # Get or create project
+      - get:
+          url: "/projects?limit=1"
+          headers:
+            Authorization: "Bearer {{ authToken }}"
+          capture:
+            - json: "$.projects[0].id"
+              as: "projectId"
+      
+      # Upload medium-sized files
+      - loop:
+          count: 3
+          flow:
+            - post:
+                url: "/files/upload"
+                headers:
+                  Authorization: "Bearer {{ authToken }}"
+                formData:
+                  file: "{{ generateMediumFile() }}"
+                  projectId: "{{ projectId }}"
+                  path: "/assets"
+                  metadata: |
+                    {
+                      "type": "asset",
+                      "category": "performance-test",
+                      "size": "medium"
+                    }
+                expect:
+                  - statusCode: [200, 201]
+                  - contentType: "application/json"
+            - think: 5
+      
+      # Upload JSON data files
+      - loop:
+          count: 2
+          flow:
+            - post:
+                url: "/projects/{{ projectId }}/files"
+                headers:
+                  Authorization: "Bearer {{ authToken }}"
+                  Content-Type: "application/json"
+                json:
+                  name: "data-{{ $randomString() }}.json"
+                  content: "{{ generateLargeJSONData() }}"
+                  path: "/data"
+                  type: "json"
+                expect:
+                  - statusCode: 201
+            - think: 8
+
+  # Large file uploads (5MB+)
+  - name: "Large File Uploads"
+    weight: 20
+    flow:
+      # Authenticate with extended timeout
+      - post:
+          url: "/auth/login"
+          headers:
+            Content-Type: "application/json"
+          json:
+            email: "perftest@example.com"
+            password: "PerfTest123!"
+          capture:
+            - json: "$.tokens.accessToken"
+              as: "authToken"
+      
+      # Upload large files with chunking
+      - post:
+          url: "/files/upload/chunked"
+          headers:
+            Authorization: "Bearer {{ authToken }}"
+            Content-Type: "application/json"
+          json:
+            fileName: "large-file-{{ $randomString() }}.bin"
+            fileSize: 10485760  # 10MB
+            chunkSize: 1048576   # 1MB chunks
+            projectId: "{{ projectId }}"
+            metadata:
+              type: "binary"
+              category: "performance-test"
+              size: "large"
+          capture:
+            - json: "$.uploadId"
+              as: "uploadId"
+      
+      # Upload file chunks
+      - loop:
+          count: 10  # 10 chunks of 1MB each
+          flow:
+            - post:
+                url: "/files/upload/chunk"
+                headers:
+                  Authorization: "Bearer {{ authToken }}"
+                formData:
+                  uploadId: "{{ uploadId }}"
+                  chunkNumber: "{{ $index }}"
+                  chunk: "{{ generateFileChunk() }}"
+                expect:
+                  - statusCode: 200
+            - think: 1
+      
+      # Complete upload
+      - post:
+          url: "/files/upload/complete"
+          headers:
+            Authorization: "Bearer {{ authToken }}"
+            Content-Type: "application/json"
+          json:
+            uploadId: "{{ uploadId }}"
+          expect:
+            - statusCode: 201
+            - hasProperty: "file.url"
+
+  # Concurrent upload testing
+  - name: "Concurrent Uploads"
+    weight: 5
+    flow:
+      # Authenticate
+      - post:
+          url: "/auth/login" 
+          headers:
+            Content-Type: "application/json"
+          json:
+            email: "perftest@example.com"
+            password: "PerfTest123!"
+          capture:
+            - json: "$.tokens.accessToken"
+              as: "authToken"
+      
+      # Start multiple uploads simultaneously
+      - parallel:
+          - post:
+              url: "/projects/{{ projectId }}/files"
+              headers:
+                Authorization: "Bearer {{ authToken }}"
+                Content-Type: "application/json"
+              json:
+                name: "concurrent-1-{{ $randomString() }}.txt"
+                content: "{{ generateSmallFileContent() }}"
+                path: "/concurrent-test"
+          
+          - post:
+              url: "/projects/{{ projectId }}/files"
+              headers:
+                Authorization: "Bearer {{ authToken }}"
+                Content-Type: "application/json"
+              json:
+                name: "concurrent-2-{{ $randomString() }}.txt"
+                content: "{{ generateSmallFileContent() }}"
+                path: "/concurrent-test"
+          
+          - post:
+              url: "/projects/{{ projectId }}/files"
+              headers:
+                Authorization: "Bearer {{ authToken }}"
+                Content-Type: "application/json"
+              json:
+                name: "concurrent-3-{{ $randomString() }}.txt"
+                content: "{{ generateSmallFileContent() }}"
+                path: "/concurrent-test"
+
+# Custom functions for generating file content
+functions:
+  generateSmallFileContent:
+    - set:
+        content: |
+          // Small test file generated at {{ $timestamp }}
+          // Performance testing content
+          
+          export const testData = {
+            timestamp: '{{ $timestamp }}',
+            random: '{{ $randomString() }}',
+            number: {{ $randomInt(1, 1000) }},
+            content: 'This is a small test file for performance testing'
+          };
+          
+          export default testData;
+    - return: "{{ content }}"
+
+  generateReactComponent:
+    - set:
+        component: |
+          import React from 'react';
+          
+          interface TestComponentProps {
+            name: string;
+            timestamp: string;
+            data?: any;
+          }
+          
+          const TestComponent: React.FC<TestComponentProps> = ({ name, timestamp, data }) => {
+            return (
+              <div className="test-component">
+                <h1>Performance Test Component</h1>
+                <p>Name: {name}</p>
+                <p>Generated: {timestamp}</p>
+                <p>Random ID: {{ $randomString() }}</p>
+                {data && <pre>{JSON.stringify(data, null, 2)}</pre>}
+              </div>
+            );
+          };
+          
+          export default TestComponent;
+    - return: "{{ component }}"
+
+  generateLargeJSONData:
+    - set:
+        data: |
+          {{#repeat 1000}}
+          {
+            "id": "{{ $randomString() }}",
+            "name": "Test Item {{ $index }}",
+            "timestamp": "{{ $timestamp }}",
+            "data": {
+              "value": {{ $randomInt(1, 10000) }},
+              "description": "Performance test data item with random content {{ $randomString() }}",
+              "tags": [
+                "performance", "test", "data", "{{ $randomString() }}"
+              ],
+              "metadata": {
+                "created": "{{ $timestamp }}",
+                "size": "medium",
+                "category": "test-data"
+              }
+            }
+          }{{#unless @last}},{{/unless}}
+          {{/repeat}}
+    - return: "[{{ data }}]"
+
+  generateMediumFile:
+    - set:
+        size: 2097152  # 2MB
+        content: "{{ $randomBytes(size) }}"
+    - return: "{{ content }}"
+
+  generateFileChunk:
+    - set:
+        chunkSize: 1048576  # 1MB
+        chunk: "{{ $randomBytes(chunkSize) }}"
+    - return: "{{ chunk }}"
+
+  calculateSize:
+    - set:
+        content: "{{ arguments[0] }}"
+        size: "{{ content.length }}"
+    - return: "{{ size }}"
+
+# Test data
+data:
+  fileTypes:
+    - extension: "txt"
+      mimeType: "text/plain"
+    - extension: "json"
+      mimeType: "application/json"
+    - extension: "js"
+      mimeType: "application/javascript"
+    - extension: "tsx"
+      mimeType: "text/typescript"
+    - extension: "css"
+      mimeType: "text/css"
+    - extension: "md"
+      mimeType: "text/markdown"
+
+  uploadPaths:
+    - "/src/components"
+    - "/src/utils"
+    - "/assets"
+    - "/data"
+    - "/docs"
+    - "/tests"
+
+# Post-test verification
+after:
+  flow:
+    - log: "File upload performance test completed"
+    - get:
+        url: "/projects/{{ projectId }}/files?uploadTest=true"
+        headers:
+          Authorization: "Bearer {{ authToken }}"
+        expect:
+          - statusCode: 200
+    - log: "Uploaded files verified successfully"
+
+# Reporting
+output:
+  - type: json
+    path: "./results/artillery-file-upload-results.json"
+  - type: html
+    path: "./results/artillery-file-upload-report.html"
+
+# Cleanup (optional)
+cleanup:
+  flow:
+    - delete:
+        url: "/projects/{{ projectId }}/files/cleanup?testTag=performance"
+        headers:
+          Authorization: "Bearer {{ authToken }}"
+    - log: "Test files cleaned up"

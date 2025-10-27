@@ -1,0 +1,562 @@
+# Analytics Service Kubernetes Deployment
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: analytics-service
+  namespace: zoptal-production
+  labels:
+    app: analytics-service
+    version: v1.0.0
+    component: analytics
+spec:
+  replicas: 3
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  selector:
+    matchLabels:
+      app: analytics-service
+  template:
+    metadata:
+      labels:
+        app: analytics-service
+        version: v1.0.0
+        component: analytics
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "3000"
+        prometheus.io/path: "/metrics"
+    spec:
+      serviceAccountName: analytics-service
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1001
+        fsGroup: 1001
+      containers:
+      - name: analytics-service
+        image: zoptal/analytics-service:v1.0.0
+        imagePullPolicy: IfNotPresent
+        ports:
+        - containerPort: 3000
+          name: http
+          protocol: TCP
+        - containerPort: 9090
+          name: metrics
+          protocol: TCP
+        env:
+        - name: NODE_ENV
+          value: "production"
+        - name: PORT
+          value: "3000"
+        - name: METRICS_PORT
+          value: "9090"
+        
+        # Database Configuration
+        - name: DATABASE_URL
+          valueFrom:
+            secretKeyRef:
+              name: analytics-secrets
+              key: database-url
+        - name: CLICKHOUSE_URL
+          valueFrom:
+            secretKeyRef:
+              name: analytics-secrets
+              key: clickhouse-url
+        
+        # Redis Configuration
+        - name: REDIS_URL
+          valueFrom:
+            secretKeyRef:
+              name: analytics-secrets
+              key: redis-url
+        
+        # CORS Configuration
+        - name: CORS_ORIGINS
+          value: "https://zoptal.com,https://*.zoptal.com,https://app.zoptal.com"
+        
+        # Analytics Configuration
+        - name: MAX_QUERY_COMPLEXITY
+          value: "1000"
+        - name: DEFAULT_CACHE_TTL
+          value: "300"
+        - name: MAX_DASHBOARD_WIDGETS
+          value: "50"
+        - name: REAL_TIME_ENABLED
+          value: "true"
+        - name: PREDICTIVE_ANALYTICS_ENABLED
+          value: "true"
+        
+        # Performance Configuration
+        - name: QUERY_TIMEOUT
+          value: "30000"
+        - name: MAX_CONCURRENT_QUERIES
+          value: "100"
+        - name: BATCH_SIZE
+          value: "10000"
+        - name: AGGREGATION_INTERVAL
+          value: "60000"
+        
+        # Security Configuration
+        - name: JWT_SECRET
+          valueFrom:
+            secretKeyRef:
+              name: analytics-secrets
+              key: jwt-secret
+        - name: API_KEY_SECRET
+          valueFrom:
+            secretKeyRef:
+              name: analytics-secrets
+              key: api-key-secret
+        
+        # Monitoring Configuration
+        - name: LOG_LEVEL
+          value: "info"
+        - name: ENABLE_QUERY_LOGGING
+          value: "true"
+        - name: ENABLE_PERFORMANCE_METRICS
+          value: "true"
+        
+        # External Services
+        - name: SLACK_WEBHOOK_URL
+          valueFrom:
+            secretKeyRef:
+              name: analytics-secrets
+              key: slack-webhook-url
+        - name: EMAIL_SERVICE_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: analytics-secrets
+              key: email-service-api-key
+        
+        resources:
+          requests:
+            memory: "1Gi"
+            cpu: "500m"
+          limits:
+            memory: "4Gi"
+            cpu: "2000m"
+        
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 3000
+          initialDelaySeconds: 30
+          periodSeconds: 30
+          timeoutSeconds: 10
+          failureThreshold: 3
+          
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 3000
+          initialDelaySeconds: 10
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+          
+        startupProbe:
+          httpGet:
+            path: /health
+            port: 3000
+          initialDelaySeconds: 20
+          periodSeconds: 10
+          timeoutSeconds: 10
+          failureThreshold: 30
+        
+        volumeMounts:
+        - name: analytics-storage
+          mountPath: /app/data
+        - name: logs
+          mountPath: /app/logs
+        - name: cache
+          mountPath: /app/cache
+        - name: tmp
+          mountPath: /tmp
+      
+      volumes:
+      - name: analytics-storage
+        persistentVolumeClaim:
+          claimName: analytics-storage-pvc
+      - name: logs
+        emptyDir: {}
+      - name: cache
+        emptyDir:
+          sizeLimit: 1Gi
+      - name: tmp
+        emptyDir: {}
+      
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 100
+            podAffinityTerm:
+              labelSelector:
+                matchExpressions:
+                - key: app
+                  operator: In
+                  values:
+                  - analytics-service
+              topologyKey: kubernetes.io/hostname
+      
+      tolerations:
+      - key: "node.kubernetes.io/not-ready"
+        operator: "Exists"
+        effect: "NoExecute"
+        tolerationSeconds: 300
+      - key: "node.kubernetes.io/unreachable"
+        operator: "Exists"
+        effect: "NoExecute"
+        tolerationSeconds: 300
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: analytics-service
+  namespace: zoptal-production
+  labels:
+    app: analytics-service
+spec:
+  type: ClusterIP
+  ports:
+  - name: http
+    port: 3000
+    targetPort: 3000
+    protocol: TCP
+  - name: metrics
+    port: 9090
+    targetPort: 9090
+    protocol: TCP
+  selector:
+    app: analytics-service
+
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: analytics-service
+  namespace: zoptal-production
+  labels:
+    app: analytics-service
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: analytics-service
+  namespace: zoptal-production
+rules:
+- apiGroups: [""]
+  resources: ["secrets", "configmaps"]
+  verbs: ["get", "list", "watch"]
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: analytics-service
+  namespace: zoptal-production
+subjects:
+- kind: ServiceAccount
+  name: analytics-service
+  namespace: zoptal-production
+roleRef:
+  kind: Role
+  name: analytics-service
+  apiGroup: rbac.authorization.k8s.io
+
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: analytics-secrets
+  namespace: zoptal-production
+  labels:
+    app: analytics-service
+type: Opaque
+data:
+  database-url: cG9zdGdyZXNxbDovL2FuYWx5dGljc3VzZXI6YW5hbHl0aWNzcGFzc3dvcmRAem9wdGFsLXBvc3RncmVzcWwuem9wdGFsLXByb2R1Y3Rpb24uc3ZjLmNsdXN0ZXIubG9jYWw6NTQzMi96b3B0YWxfYW5hbHl0aWNz # postgresql://analyticsuser:analyticspassword@zoptal-postgresql.zoptal-production.svc.cluster.local:5432/zoptal_analytics
+  clickhouse-url: aHR0cDovL3pvcHRhbC1jbGlja2hvdXNlLnpvcHRhbC1wcm9kdWN0aW9uLnN2Yy5jbHVzdGVyLmxvY2FsOjgxMjM= # http://zoptal-clickhouse.zoptal-production.svc.cluster.local:8123
+  redis-url: cmVkaXM6Ly96b3B0YWwtcmVkaXMuem9wdGFsLXByb2R1Y3Rpb24uc3ZjLmNsdXN0ZXIubG9jYWw6NjM3OS8y # redis://zoptal-redis.zoptal-production.svc.cluster.local:6379/2
+  jwt-secret: YW5hbHl0aWNzLWp3dC1zZWNyZXQtMTIzNDU2Nzg5MA== # analytics-jwt-secret-1234567890
+  api-key-secret: YW5hbHl0aWNzLWFwaS1rZXktc2VjcmV0LTEyMzQ1Njc4OTA= # analytics-api-key-secret-1234567890
+  slack-webhook-url: aHR0cHM6Ly9ob29rcy5zbGFjay5jb20vc2VydmljZXMvVDAwMDAwMDAwL0IwMDAwMDAwMC9hbmFseXRpY3N4eHh4eHh4eHh4eHh4eHh4eHg= # https://hooks.slack.com/services/T00000000/B00000000/analyticsxxxxxxxxxxxxxxxx
+  email-service-api-key: ZW1haWwtc2VydmljZS1hcGkta2V5LTEyMzQ1Njc4OTA= # email-service-api-key-1234567890
+
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: analytics-storage-pvc
+  namespace: zoptal-production
+  labels:
+    app: analytics-service
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: fast-ssd
+  resources:
+    requests:
+      storage: 200Gi
+
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: analytics-service
+  namespace: zoptal-production
+  labels:
+    app: analytics-service
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: analytics-service
+  minReplicas: 3
+  maxReplicas: 15
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 70
+  - type: Resource
+    resource:
+      name: memory
+      target:
+        type: Utilization
+        averageUtilization: 80
+  behavior:
+    scaleDown:
+      stabilizationWindowSeconds: 300
+      policies:
+      - type: Percent
+        value: 10
+        periodSeconds: 60
+    scaleUp:
+      stabilizationWindowSeconds: 60
+      policies:
+      - type: Percent
+        value: 100
+        periodSeconds: 60
+      - type: Pods
+        value: 4
+        periodSeconds: 60
+
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: analytics-service
+  namespace: zoptal-production
+  labels:
+    app: analytics-service
+spec:
+  minAvailable: 2
+  selector:
+    matchLabels:
+      app: analytics-service
+
+---
+apiVersion: networking.istio.io/v1beta1
+kind: VirtualService
+metadata:
+  name: analytics-service
+  namespace: zoptal-production
+spec:
+  hosts:
+  - analytics.zoptal.com
+  gateways:
+  - zoptal-gateway
+  http:
+  - match:
+    - uri:
+        prefix: /
+    route:
+    - destination:
+        host: analytics-service
+        port:
+          number: 3000
+    timeout: 300s
+    retries:
+      attempts: 3
+      perTryTimeout: 100s
+      retryOn: 5xx,gateway-error,connect-failure,refused-stream
+
+---
+apiVersion: networking.istio.io/v1beta1
+kind: DestinationRule
+metadata:
+  name: analytics-service
+  namespace: zoptal-production
+spec:
+  host: analytics-service
+  trafficPolicy:
+    connectionPool:
+      tcp:
+        maxConnections: 200
+      http:
+        http1MaxPendingRequests: 50
+        maxRequestsPerConnection: 50
+        maxRetries: 3
+        consecutiveGatewayErrors: 5
+        interval: 30s
+        baseEjectionTime: 30s
+        maxEjectionPercent: 50
+    circuitBreaker:
+      consecutiveGatewayErrors: 5
+      consecutive5xxErrors: 5
+      interval: 30s
+      baseEjectionTime: 30s
+      maxEjectionPercent: 50
+    outlierDetection:
+      consecutiveGatewayErrors: 5
+      consecutive5xxErrors: 5
+      interval: 30s
+      baseEjectionTime: 30s
+      maxEjectionPercent: 50
+      minHealthPercent: 50
+
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: analytics-service
+  namespace: zoptal-production
+  labels:
+    app: analytics-service
+spec:
+  selector:
+    matchLabels:
+      app: analytics-service
+  endpoints:
+  - port: metrics
+    interval: 15s
+    path: /metrics
+    honorLabels: true
+
+---
+# ClickHouse for Analytics Data Storage
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: analytics-clickhouse
+  namespace: zoptal-production
+  labels:
+    app: analytics-clickhouse
+spec:
+  serviceName: analytics-clickhouse
+  replicas: 3
+  selector:
+    matchLabels:
+      app: analytics-clickhouse
+  template:
+    metadata:
+      labels:
+        app: analytics-clickhouse
+    spec:
+      containers:
+      - name: clickhouse
+        image: clickhouse/clickhouse-server:23.8-alpine
+        ports:
+        - containerPort: 8123
+          name: http
+        - containerPort: 9000
+          name: native
+        env:
+        - name: CLICKHOUSE_DB
+          value: "analytics"
+        - name: CLICKHOUSE_USER
+          value: "analytics"
+        - name: CLICKHOUSE_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: clickhouse-secret
+              key: password
+        volumeMounts:
+        - name: clickhouse-storage
+          mountPath: /var/lib/clickhouse
+        - name: clickhouse-config
+          mountPath: /etc/clickhouse-server/config.d
+        resources:
+          requests:
+            memory: "2Gi"
+            cpu: "1000m"
+          limits:
+            memory: "8Gi"
+            cpu: "4000m"
+      volumes:
+      - name: clickhouse-config
+        configMap:
+          name: clickhouse-config
+  volumeClaimTemplates:
+  - metadata:
+      name: clickhouse-storage
+    spec:
+      accessModes: ["ReadWriteOnce"]
+      storageClassName: "fast-ssd"
+      resources:
+        requests:
+          storage: 500Gi
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: analytics-clickhouse
+  namespace: zoptal-production
+  labels:
+    app: analytics-clickhouse
+spec:
+  ports:
+  - name: http
+    port: 8123
+    targetPort: 8123
+  - name: native
+    port: 9000
+    targetPort: 9000
+  selector:
+    app: analytics-clickhouse
+  clusterIP: None
+
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: clickhouse-secret
+  namespace: zoptal-production
+type: Opaque
+data:
+  password: Y2xpY2tob3VzZV9wYXNzd29yZF8xMjM= # clickhouse_password_123
+
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: clickhouse-config
+  namespace: zoptal-production
+data:
+  analytics.xml: |
+    <clickhouse>
+      <profiles>
+        <analytics>
+          <max_memory_usage>4000000000</max_memory_usage>
+          <use_uncompressed_cache>1</use_uncompressed_cache>
+          <load_balancing>random</load_balancing>
+        </analytics>
+      </profiles>
+      <users>
+        <analytics>
+          <password>clickhouse_password_123</password>
+          <profile>analytics</profile>
+          <quota>default</quota>
+          <networks>
+            <ip>::/0</ip>
+          </networks>
+        </analytics>
+      </users>
+    </clickhouse>

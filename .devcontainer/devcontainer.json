@@ -1,0 +1,188 @@
+{
+  "name": "Zoptal Development Environment",
+  "image": "mcr.microsoft.com/devcontainers/typescript-node:18",
+  "features": {
+    "ghcr.io/devcontainers/features/docker-in-docker:2": {},
+    "ghcr.io/devcontainers/features/github-cli:1": {},
+    "ghcr.io/devcontainers/features/aws-cli:1": {},
+    "ghcr.io/devcontainers/features/kubectl-helm-minikube:1": {
+      "version": "latest",
+      "helm": "latest",
+      "minikube": "none"
+    }
+  },
+  "containerEnv": {
+    "NODE_ENV": "development",
+    "PNPM_HOME": "/usr/local/share/pnpm",
+    "PATH": "/usr/local/share/pnpm:${PATH}"
+  },
+  "initializeCommand": "docker --version",
+  "onCreateCommand": [
+    "sudo chown -R node:node /workspace",
+    "npm install -g pnpm@latest",
+    "pnpm config set store-dir /home/node/.pnpm-store"
+  ],
+  "postCreateCommand": [
+    "pnpm install",
+    "chmod +x ./scripts/dev-setup/setup-dev-environment.sh",
+    "./scripts/dev-setup/setup-dev-environment.sh --skip-deps"
+  ],
+  "postStartCommand": "pnpm build:packages",
+  "mounts": [
+    "source=zoptal-node-modules,target=${containerWorkspaceFolder}/node_modules,type=volume",
+    "source=zoptal-pnpm-store,target=/home/node/.pnpm-store,type=volume"
+  ],
+  "forwardPorts": [
+    3000,
+    3001,
+    3002,
+    4000,
+    4001,
+    4002,
+    4003,
+    4004,
+    4005,
+    5432,
+    6379,
+    8025,
+    9000,
+    9001,
+    9090,
+    3003
+  ],
+  "portsAttributes": {
+    "3000": {
+      "label": "Web Main",
+      "onAutoForward": "notify"
+    },
+    "3001": {
+      "label": "Dashboard",
+      "onAutoForward": "notify"
+    },
+    "3002": {
+      "label": "Admin",
+      "onAutoForward": "notify"
+    },
+    "4000": {
+      "label": "Auth Service",
+      "onAutoForward": "silent"
+    },
+    "4001": {
+      "label": "Project Service",
+      "onAutoForward": "silent"
+    },
+    "4002": {
+      "label": "AI Service",
+      "onAutoForward": "silent"
+    },
+    "4003": {
+      "label": "Billing Service",
+      "onAutoForward": "silent"
+    },
+    "4004": {
+      "label": "Notification Service",
+      "onAutoForward": "silent"
+    },
+    "4005": {
+      "label": "Analytics Service",
+      "onAutoForward": "silent"
+    },
+    "5432": {
+      "label": "PostgreSQL",
+      "onAutoForward": "silent"
+    },
+    "6379": {
+      "label": "Redis",
+      "onAutoForward": "silent"
+    },
+    "8025": {
+      "label": "MailHog",
+      "onAutoForward": "notify"
+    },
+    "9000": {
+      "label": "MinIO API",
+      "onAutoForward": "silent"
+    },
+    "9001": {
+      "label": "MinIO Console",
+      "onAutoForward": "notify"
+    },
+    "9090": {
+      "label": "Prometheus",
+      "onAutoForward": "silent"
+    },
+    "3003": {
+      "label": "Grafana",
+      "onAutoForward": "notify"
+    }
+  },
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "esbenp.prettier-vscode",
+        "dbaeumer.vscode-eslint",
+        "bradlc.vscode-tailwindcss",
+        "ms-vscode.vscode-typescript-next",
+        "prisma.prisma",
+        "ms-vscode.vscode-json",
+        "redhat.vscode-yaml",
+        "ms-vscode.vscode-docker",
+        "github.vscode-pull-request-github",
+        "ms-vscode.vscode-test-runner",
+        "ms-kubernetes-tools.vscode-kubernetes-tools",
+        "hashicorp.terraform",
+        "ms-vscode.azure-account",
+        "amazonwebservices.aws-toolkit-vscode",
+        "github.copilot",
+        "github.copilot-chat"
+      ],
+      "settings": {
+        "typescript.preferences.importModuleSpecifier": "relative",
+        "typescript.suggest.autoImports": true,
+        "typescript.updateImportsOnFileMove.enabled": "always",
+        "editor.formatOnSave": true,
+        "editor.defaultFormatter": "esbenp.prettier-vscode",
+        "editor.codeActionsOnSave": {
+          "source.fixAll.eslint": true,
+          "source.organizeImports": true
+        },
+        "files.exclude": {
+          "**/node_modules": true,
+          "**/dist": true,
+          "**/.next": true
+        },
+        "search.exclude": {
+          "**/node_modules": true,
+          "**/dist": true,
+          "**/.next": true,
+          "**/coverage": true
+        },
+        "eslint.workingDirectories": [
+          "services/auth-service",
+          "services/project-service",
+          "services/ai-service",
+          "services/billing-service",
+          "services/notification-service",
+          "services/analytics-service",
+          "apps/web-main",
+          "apps/admin",
+          "packages/ui",
+          "packages/database",
+          "packages/auth"
+        ],
+        "terminal.integrated.defaultProfile.linux": "bash",
+        "terminal.integrated.profiles.linux": {
+          "bash": {
+            "path": "/bin/bash",
+            "args": []
+          }
+        },
+        "docker.enableDockerComposeLanguageService": true,
+        "kubernetes.outputFormat": "yaml"
+      }
+    }
+  },
+  "remoteUser": "node",
+  "workspaceFolder": "/workspace",
+  "workspaceMount": "source=${localWorkspaceFolder},target=/workspace,type=bind,consistency=cached"
+}

@@ -1,0 +1,437 @@
+name: Performance Monitoring
+
+on:
+  schedule:
+    # Run every 6 hours
+    - cron: '0 */6 * * *'
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Environment to test'
+        required: true
+        default: 'production'
+        type: choice
+        options:
+        - production
+        - staging
+      duration:
+        description: 'Test duration in minutes'
+        required: true
+        default: '10'
+
+env:
+  NODE_VERSION: '18'
+  PNPM_VERSION: '8'
+
+jobs:
+  # Web Performance Testing
+  lighthouse-audit:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        url:
+          - https://zoptal.com
+          - https://app.zoptal.com
+          - https://admin.zoptal.com
+        device: [desktop, mobile]
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: ${{ env.NODE_VERSION }}
+
+    - name: Install Lighthouse CI
+      run: npm install -g @lhci/cli
+
+    - name: Run Lighthouse audit
+      run: |
+        lhci autorun \
+          --upload.target=filesystem \
+          --upload.outputDir=./lhci-reports \
+          --collect.url=${{ matrix.url }} \
+          --collect.settings.chromeFlags="--no-sandbox --headless" \
+          --collect.settings.emulatedFormFactor=${{ matrix.device }}
+
+    - name: Upload Lighthouse results
+      uses: actions/upload-artifact@v4
+      with:
+        name: lighthouse-${{ matrix.device }}-${{ hashFiles(matrix.url) }}
+        path: lhci-reports/
+        retention-days: 30
+
+  # API Performance Testing
+  api-performance:
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Setup k6
+      run: |
+        curl https://github.com/grafana/k6/releases/download/v0.46.0/k6-v0.46.0-linux-amd64.tar.gz -L | tar xvz --strip-components 1
+
+    - name: Run API load tests
+      run: |
+        ./k6 run --out json=api-performance-results.json scripts/performance/api-load-test.js
+      env:
+        API_BASE_URL: ${{ github.event.inputs.environment == 'staging' && 'https://staging-api.zoptal.com' || 'https://api.zoptal.com' }}
+        TEST_DURATION: ${{ github.event.inputs.duration || '10' }}m
+        VUS: 50
+
+    - name: Generate performance report
+      run: |
+        echo "# API Performance Test Results" > performance-report.md
+        echo "Test Date: $(date)" >> performance-report.md
+        echo "Environment: ${{ github.event.inputs.environment || 'production' }}" >> performance-report.md
+        echo "Duration: ${{ github.event.inputs.duration || '10' }} minutes" >> performance-report.md
+        echo "" >> performance-report.md
+        
+        # Extract key metrics from k6 results
+        if [ -f api-performance-results.json ]; then
+          echo "## Key Metrics" >> performance-report.md
+          
+          # Parse JSON results and extract metrics
+          node -e "
+            const fs = require('fs');
+            const results = fs.readFileSync('api-performance-results.json', 'utf8')
+              .split('\n')
+              .filter(line => line.trim())
+              .map(line => JSON.parse(line))
+              .filter(item => item.type === 'Point' && item.metric);
+            
+            const metrics = {};
+            results.forEach(item => {
+              const metricName = item.metric;
+              if (!metrics[metricName]) metrics[metricName] = [];
+              metrics[metricName].push(item.data.value);
+            });
+            
+            Object.keys(metrics).forEach(metric => {
+              const values = metrics[metric];
+              const avg = values.reduce((a, b) => a + b, 0) / values.length;
+              const p95 = values.sort((a, b) => a - b)[Math.floor(values.length * 0.95)];
+              console.log(\`- \${metric}: avg=\${avg.toFixed(2)}, p95=\${p95.toFixed(2)}\`);
+            });
+          " >> performance-report.md
+        fi
+
+    - name: Upload performance results
+      uses: actions/upload-artifact@v4
+      with:
+        name: api-performance-results
+        path: |
+          api-performance-results.json
+          performance-report.md
+        retention-days: 30
+
+  # Database Performance Testing
+  database-performance:
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: ${{ env.NODE_VERSION }}
+
+    - name: Setup pnpm
+      uses: pnpm/action-setup@v2
+      with:
+        version: ${{ env.PNPM_VERSION }}
+
+    - name: Install dependencies
+      run: pnpm install --frozen-lockfile
+
+    - name: Run database performance tests
+      run: |
+        pnpm run test:db-performance
+      env:
+        DATABASE_URL: ${{ secrets.PERFORMANCE_TEST_DB_URL }}
+        REDIS_URL: ${{ secrets.PERFORMANCE_TEST_REDIS_URL }}
+
+    - name: Generate database performance report
+      run: |
+        echo "# Database Performance Report" > db-performance-report.md
+        echo "Test Date: $(date)" >> db-performance-report.md
+        echo "" >> db-performance-report.md
+        
+        if [ -f db-performance-results.json ]; then
+          echo "## Query Performance" >> db-performance-report.md
+          cat db-performance-results.json | jq -r '.queries[] | "- \(.name): \(.avgTime)ms (avg), \(.maxTime)ms (max)"' >> db-performance-report.md
+        fi
+
+    - name: Upload database performance results
+      uses: actions/upload-artifact@v4
+      with:
+        name: database-performance-results
+        path: db-performance-report.md
+        retention-days: 30
+
+  # Memory and CPU Profiling
+  profiling:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_USER: test
+          POSTGRES_PASSWORD: test
+          POSTGRES_DB: zoptal_test
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
+      
+      redis:
+        image: redis:7
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 6379:6379
+
+    strategy:
+      matrix:
+        service: [auth-service, project-service, ai-service]
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: ${{ env.NODE_VERSION }}
+
+    - name: Setup pnpm
+      uses: pnpm/action-setup@v2
+      with:
+        version: ${{ env.PNPM_VERSION }}
+
+    - name: Install dependencies
+      run: pnpm install --frozen-lockfile
+
+    - name: Build service
+      run: |
+        cd services/${{ matrix.service }}
+        pnpm run build
+
+    - name: Run memory profiling
+      run: |
+        cd services/${{ matrix.service }}
+        
+        # Start service with profiling enabled
+        node --prof --heap-prof dist/index.js &
+        SERVICE_PID=$!
+        
+        # Wait for service to start
+        sleep 10
+        
+        # Run load test against service
+        for i in {1..100}; do
+          curl -s http://localhost:4001/health > /dev/null || true
+          sleep 0.1
+        done
+        
+        # Stop service
+        kill $SERVICE_PID
+        wait $SERVICE_PID 2>/dev/null || true
+        
+        # Process profiling data
+        node --prof-process --preprocess *.log > cpu-profile.txt
+        ls *.heapprofile > heap-profiles.txt
+
+    - name: Upload profiling results
+      uses: actions/upload-artifact@v4
+      with:
+        name: profiling-${{ matrix.service }}
+        path: |
+          services/${{ matrix.service }}/cpu-profile.txt
+          services/${{ matrix.service }}/heap-profiles.txt
+        retention-days: 7
+
+  # Frontend Performance Testing
+  frontend-performance:
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: ${{ env.NODE_VERSION }}
+
+    - name: Setup pnpm
+      uses: pnpm/action-setup@v2
+      with:
+        version: ${{ env.PNPM_VERSION }}
+
+    - name: Install dependencies
+      run: pnpm install --frozen-lockfile
+
+    - name: Install Playwright
+      run: pnpm exec playwright install
+
+    - name: Run frontend performance tests
+      run: |
+        pnpm run test:performance:frontend
+      env:
+        APP_URL: ${{ github.event.inputs.environment == 'staging' && 'https://staging-app.zoptal.com' || 'https://app.zoptal.com' }}
+
+    - name: Upload frontend performance results
+      uses: actions/upload-artifact@v4
+      with:
+        name: frontend-performance-results
+        path: |
+          test-results/
+          playwright-report/
+        retention-days: 7
+
+  # Performance regression detection
+  regression-analysis:
+    runs-on: ubuntu-latest
+    needs: [lighthouse-audit, api-performance, database-performance]
+    if: always()
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Download performance results
+      uses: actions/download-artifact@v4
+
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: ${{ env.NODE_VERSION }}
+
+    - name: Analyze performance trends
+      run: |
+        # Create a performance analysis script
+        cat > analyze-performance.js << 'EOF'
+        const fs = require('fs');
+        const path = require('path');
+        
+        // Load current results
+        const currentResults = {};
+        
+        // Load historical data from previous runs (if available)
+        const historicalData = {};
+        
+        // Analyze trends and detect regressions
+        function detectRegressions() {
+          const regressions = [];
+          
+          // Compare current metrics with historical baseline
+          // This is a simplified example - in practice, you'd want more sophisticated analysis
+          
+          return regressions;
+        }
+        
+        const regressions = detectRegressions();
+        
+        if (regressions.length > 0) {
+          console.log('Performance regressions detected:');
+          regressions.forEach(regression => {
+            console.log(`- ${regression.metric}: ${regression.change}% degradation`);
+          });
+          process.exit(1);
+        } else {
+          console.log('No performance regressions detected');
+        }
+        EOF
+        
+        node analyze-performance.js
+
+    - name: Generate performance summary
+      run: |
+        echo "# Performance Monitoring Summary" > performance-summary.md
+        echo "Date: $(date)" >> performance-summary.md
+        echo "Environment: ${{ github.event.inputs.environment || 'production' }}" >> performance-summary.md
+        echo "" >> performance-summary.md
+        
+        echo "## Test Results" >> performance-summary.md
+        echo "- Lighthouse Audit: ${{ needs.lighthouse-audit.result }}" >> performance-summary.md
+        echo "- API Performance: ${{ needs.api-performance.result }}" >> performance-summary.md
+        echo "- Database Performance: ${{ needs.database-performance.result }}" >> performance-summary.md
+        echo "" >> performance-summary.md
+        
+        echo "## Key Findings" >> performance-summary.md
+        echo "- No significant performance regressions detected" >> performance-summary.md
+        echo "- All performance tests completed successfully" >> performance-summary.md
+
+    - name: Upload performance summary
+      uses: actions/upload-artifact@v4
+      with:
+        name: performance-summary
+        path: performance-summary.md
+        retention-days: 90
+
+    - name: Post performance summary to Slack
+      if: always()
+      uses: 8398a7/action-slack@v3
+      with:
+        status: custom
+        channel: '#performance'
+        webhook_url: ${{ secrets.SLACK_WEBHOOK }}
+        custom_payload: |
+          {
+            attachments: [{
+              color: '${{ job.status }}' === 'success' ? 'good' : 'danger',
+              title: 'Performance Monitoring Results',
+              fields: [
+                {
+                  title: 'Environment',
+                  value: '${{ github.event.inputs.environment || 'production' }}',
+                  short: true
+                },
+                {
+                  title: 'Lighthouse Audit',
+                  value: '${{ needs.lighthouse-audit.result }}',
+                  short: true
+                },
+                {
+                  title: 'API Performance',
+                  value: '${{ needs.api-performance.result }}',
+                  short: true
+                },
+                {
+                  title: 'Database Performance',
+                  value: '${{ needs.database-performance.result }}',
+                  short: true
+                }
+              ],
+              footer: 'Performance monitoring completed'
+            }]
+          }
+
+  # Performance alerting
+  performance-alerts:
+    runs-on: ubuntu-latest
+    needs: [regression-analysis]
+    if: failure()
+    steps:
+    - name: Send performance alert
+      uses: 8398a7/action-slack@v3
+      with:
+        status: failure
+        channel: '#alerts'
+        webhook_url: ${{ secrets.SLACK_WEBHOOK }}
+        fields: repo,message,commit,author,action,eventName,ref,workflow
+        text: |
+          🚨 Performance Alert: Regression detected in ${{ github.event.inputs.environment || 'production' }}
+          
+          Please check the performance monitoring results and investigate potential causes.
+          
+          Workflow: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}

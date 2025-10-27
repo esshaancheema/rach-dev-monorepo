@@ -1,0 +1,369 @@
+name: Blue-Green Deployment
+
+on:
+  workflow_dispatch:
+    inputs:
+      service:
+        description: 'Service to deploy'
+        required: true
+        type: choice
+        options:
+          - auth-service
+          - project-service
+          - ai-service
+          - billing-service
+          - notification-service
+          - analytics-service
+          - web-main
+          - admin
+      environment:
+        description: 'Target environment'
+        required: true
+        type: choice
+        options:
+          - staging
+          - production
+      rollback:
+        description: 'Rollback to previous version'
+        required: false
+        type: boolean
+        default: false
+
+env:
+  AWS_REGION: us-east-1
+  ECR_REGISTRY: ${{ secrets.ECR_REGISTRY }}
+  KUBE_CONFIG_DATA: ${{ secrets.KUBE_CONFIG_DATA }}
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      deployment-id: ${{ steps.prepare.outputs.deployment-id }}
+      image-tag: ${{ steps.prepare.outputs.image-tag }}
+      current-version: ${{ steps.prepare.outputs.current-version }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Prepare deployment
+        id: prepare
+        run: |
+          DEPLOYMENT_ID="deploy-$(date +%Y%m%d-%H%M%S)-${{ github.sha }}"
+          IMAGE_TAG="${{ github.sha }}"
+          
+          echo "deployment-id=${DEPLOYMENT_ID}" >> $GITHUB_OUTPUT
+          echo "image-tag=${IMAGE_TAG}" >> $GITHUB_OUTPUT
+          
+          # Get current version from Kubernetes
+          echo "${{ env.KUBE_CONFIG_DATA }}" | base64 -d > kubeconfig
+          export KUBECONFIG=kubeconfig
+          
+          CURRENT_VERSION=$(kubectl get deployment ${{ inputs.service }} -n ${{ inputs.environment }} -o jsonpath='{.spec.template.spec.containers[0].image}' | cut -d':' -f2 || echo "none")
+          echo "current-version=${CURRENT_VERSION}" >> $GITHUB_OUTPUT
+
+  build:
+    runs-on: ubuntu-latest
+    needs: prepare
+    if: ${{ !inputs.rollback }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./services/${{ inputs.service }}/Dockerfile
+          push: true
+          tags: |
+            ${{ env.ECR_REGISTRY }}/${{ inputs.service }}:${{ needs.prepare.outputs.image-tag }}
+            ${{ env.ECR_REGISTRY }}/${{ inputs.service }}:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          platforms: linux/amd64
+
+      - name: Scan image for vulnerabilities
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: ${{ env.ECR_REGISTRY }}/${{ inputs.service }}:${{ needs.prepare.outputs.image-tag }}
+          format: 'sarif'
+          output: 'trivy-results.sarif'
+
+      - name: Upload Trivy scan results
+        uses: github/codeql-action/upload-sarif@v2
+        if: always()
+        with:
+          sarif_file: 'trivy-results.sarif'
+
+  deploy-green:
+    runs-on: ubuntu-latest
+    needs: [prepare, build]
+    if: ${{ !inputs.rollback }}
+    environment: ${{ inputs.environment }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup kubectl
+        uses: azure/setup-kubectl@v3
+        with:
+          version: 'v1.28.0'
+
+      - name: Configure kubeconfig
+        run: |
+          echo "${{ env.KUBE_CONFIG_DATA }}" | base64 -d > kubeconfig
+          export KUBECONFIG=kubeconfig
+
+      - name: Create green deployment
+        run: |
+          export KUBECONFIG=kubeconfig
+          
+          # Create green version of the service
+          cat k8s/services/${{ inputs.service }}.yaml | \
+            sed 's/name: ${{ inputs.service }}/name: ${{ inputs.service }}-green/' | \
+            sed 's/app: ${{ inputs.service }}/app: ${{ inputs.service }}-green/' | \
+            sed 's/image: .*$/image: ${{ env.ECR_REGISTRY }}\/${{ inputs.service }}:${{ needs.prepare.outputs.image-tag }}/' | \
+            kubectl apply -f - -n ${{ inputs.environment }}
+          
+          # Wait for green deployment to be ready
+          kubectl rollout status deployment/${{ inputs.service }}-green -n ${{ inputs.environment }} --timeout=600s
+
+      - name: Run health checks on green deployment
+        run: |
+          export KUBECONFIG=kubeconfig
+          
+          # Port forward to green service for testing
+          kubectl port-forward service/${{ inputs.service }}-green 8080:80 -n ${{ inputs.environment }} &
+          PF_PID=$!
+          
+          sleep 10
+          
+          # Health check
+          for i in {1..30}; do
+            if curl -f http://localhost:8080/health; then
+              echo "Health check passed"
+              kill $PF_PID
+              exit 0
+            fi
+            echo "Health check attempt $i failed, retrying..."
+            sleep 10
+          done
+          
+          kill $PF_PID
+          echo "Health checks failed"
+          exit 1
+
+      - name: Run integration tests on green deployment
+        run: |
+          export KUBECONFIG=kubeconfig
+          
+          # Run integration tests against green deployment
+          npm install
+          npm run test:integration -- --service=${{ inputs.service }}-green --namespace=${{ inputs.environment }}
+
+  switch-traffic:
+    runs-on: ubuntu-latest
+    needs: [prepare, deploy-green]
+    if: ${{ !inputs.rollback }}
+    environment: ${{ inputs.environment }}-approval
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup kubectl
+        uses: azure/setup-kubectl@v3
+
+      - name: Configure kubeconfig
+        run: |
+          echo "${{ env.KUBE_CONFIG_DATA }}" | base64 -d > kubeconfig
+          export KUBECONFIG=kubeconfig
+
+      - name: Switch traffic to green
+        run: |
+          export KUBECONFIG=kubeconfig
+          
+          # Update service selector to point to green deployment
+          kubectl patch service ${{ inputs.service }} -n ${{ inputs.environment }} -p '{"spec":{"selector":{"app":"${{ inputs.service }}-green"}}}'
+          
+          echo "Traffic switched to green deployment"
+
+      - name: Monitor traffic switch
+        run: |
+          export KUBECONFIG=kubeconfig
+          
+          # Monitor for 5 minutes
+          for i in {1..30}; do
+            echo "Monitoring traffic switch... ($i/30)"
+            
+            # Check error rates
+            ERROR_RATE=$(curl -s "http://prometheus:9090/api/v1/query?query=rate(http_requests_total{job=\"${{ inputs.service }}\",code=~\"5..\"}[5m])" | jq -r '.data.result[0].value[1] // "0"')
+            
+            if (( $(echo "$ERROR_RATE > 0.05" | bc -l) )); then
+              echo "High error rate detected: $ERROR_RATE"
+              echo "Initiating automatic rollback"
+              
+              # Rollback
+              kubectl patch service ${{ inputs.service }} -n ${{ inputs.environment }} -p '{"spec":{"selector":{"app":"${{ inputs.service }}"}}}'
+              exit 1
+            fi
+            
+            sleep 10
+          done
+          
+          echo "Traffic switch monitoring completed successfully"
+
+  cleanup-blue:
+    runs-on: ubuntu-latest
+    needs: [prepare, switch-traffic]
+    if: ${{ !inputs.rollback }}
+    steps:
+      - name: Setup kubectl
+        uses: azure/setup-kubectl@v3
+
+      - name: Configure kubeconfig
+        run: |
+          echo "${{ env.KUBE_CONFIG_DATA }}" | base64 -d > kubeconfig
+          export KUBECONFIG=kubeconfig
+
+      - name: Cleanup old blue deployment
+        run: |
+          export KUBECONFIG=kubeconfig
+          
+          # Rename current deployment to blue (old)
+          if kubectl get deployment ${{ inputs.service }} -n ${{ inputs.environment }} &>/dev/null; then
+            kubectl delete deployment ${{ inputs.service }}-blue -n ${{ inputs.environment }} --ignore-not-found=true
+            
+            # Keep old deployment as blue for potential rollback
+            kubectl get deployment ${{ inputs.service }} -n ${{ inputs.environment }} -o yaml | \
+              sed 's/name: ${{ inputs.service }}/name: ${{ inputs.service }}-blue/' | \
+              sed 's/app: ${{ inputs.service }}/app: ${{ inputs.service }}-blue/' | \
+              kubectl apply -f -
+              
+            kubectl delete deployment ${{ inputs.service }} -n ${{ inputs.environment }}
+          fi
+          
+          # Rename green to current
+          kubectl get deployment ${{ inputs.service }}-green -n ${{ inputs.environment }} -o yaml | \
+            sed 's/name: ${{ inputs.service }}-green/name: ${{ inputs.service }}/' | \
+            sed 's/app: ${{ inputs.service }}-green/app: ${{ inputs.service }}/' | \
+            kubectl apply -f -
+            
+          kubectl delete deployment ${{ inputs.service }}-green -n ${{ inputs.environment }}
+
+  rollback:
+    runs-on: ubuntu-latest
+    needs: prepare
+    if: ${{ inputs.rollback }}
+    environment: ${{ inputs.environment }}-approval
+    steps:
+      - name: Setup kubectl
+        uses: azure/setup-kubectl@v3
+
+      - name: Configure kubeconfig
+        run: |
+          echo "${{ env.KUBE_CONFIG_DATA }}" | base64 -d > kubeconfig
+          export KUBECONFIG=kubeconfig
+
+      - name: Rollback to blue deployment
+        run: |
+          export KUBECONFIG=kubeconfig
+          
+          if kubectl get deployment ${{ inputs.service }}-blue -n ${{ inputs.environment }} &>/dev/null; then
+            echo "Rolling back to blue deployment"
+            
+            # Switch traffic back to blue
+            kubectl patch service ${{ inputs.service }} -n ${{ inputs.environment }} -p '{"spec":{"selector":{"app":"${{ inputs.service }}-blue"}}}'
+            
+            # Rename deployments
+            kubectl delete deployment ${{ inputs.service }}-green -n ${{ inputs.environment }} --ignore-not-found=true
+            
+            kubectl get deployment ${{ inputs.service }}-blue -n ${{ inputs.environment }} -o yaml | \
+              sed 's/name: ${{ inputs.service }}-blue/name: ${{ inputs.service }}/' | \
+              sed 's/app: ${{ inputs.service }}-blue/app: ${{ inputs.service }}/' | \
+              kubectl apply -f -
+              
+            kubectl delete deployment ${{ inputs.service }}-blue -n ${{ inputs.environment }}
+            
+            echo "Rollback completed"
+          else
+            echo "No blue deployment found for rollback"
+            kubectl rollout undo deployment/${{ inputs.service }} -n ${{ inputs.environment }}
+            echo "Performed standard rollback"
+          fi
+
+      - name: Verify rollback
+        run: |
+          export KUBECONFIG=kubeconfig
+          
+          kubectl rollout status deployment/${{ inputs.service }} -n ${{ inputs.environment }}
+          
+          # Health check
+          kubectl port-forward service/${{ inputs.service }} 8080:80 -n ${{ inputs.environment }} &
+          PF_PID=$!
+          
+          sleep 10
+          
+          if curl -f http://localhost:8080/health; then
+            echo "Rollback health check passed"
+            kill $PF_PID
+          else
+            kill $PF_PID
+            echo "Rollback health check failed"
+            exit 1
+          fi
+
+  notify:
+    runs-on: ubuntu-latest
+    needs: [prepare, cleanup-blue, rollback]
+    if: always()
+    steps:
+      - name: Notify deployment status
+        uses: 8398a7/action-slack@v3
+        with:
+          status: ${{ job.status }}
+          channel: '#deployments'
+          text: |
+            ${{ inputs.rollback && 'Rollback' || 'Blue-Green Deployment' }} ${{ job.status }}
+            Service: ${{ inputs.service }}
+            Environment: ${{ inputs.environment }}
+            ${{ !inputs.rollback && format('Image: {0}', needs.prepare.outputs.image-tag) || format('Rolled back from: {0}', needs.prepare.outputs.current-version) }}
+            Deployment ID: ${{ needs.prepare.outputs.deployment-id }}
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+
+  update-deployment-status:
+    runs-on: ubuntu-latest
+    needs: [prepare, cleanup-blue, rollback]
+    if: always()
+    steps:
+      - name: Update deployment tracking
+        run: |
+          # Update deployment tracking database or file
+          curl -X POST "${{ secrets.DEPLOYMENT_TRACKER_URL }}/api/deployments" \
+            -H "Content-Type: application/json" \
+            -H "Authorization: Bearer ${{ secrets.DEPLOYMENT_TRACKER_TOKEN }}" \
+            -d '{
+              "deploymentId": "${{ needs.prepare.outputs.deployment-id }}",
+              "service": "${{ inputs.service }}",
+              "environment": "${{ inputs.environment }}",
+              "type": "${{ inputs.rollback && 'rollback' || 'blue-green' }}",
+              "status": "${{ job.status }}",
+              "imageTag": "${{ needs.prepare.outputs.image-tag }}",
+              "timestamp": "'$(date -u +%Y-%m-%dT%H:%M:%SZ)'",
+              "commit": "${{ github.sha }}",
+              "actor": "${{ github.actor }}"
+            }'

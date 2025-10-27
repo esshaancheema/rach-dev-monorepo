@@ -1,0 +1,507 @@
+# Comprehensive Security Policies for Zoptal Platform
+# Implements Pod Security Standards, Network Policies, and RBAC
+
+---
+# Pod Security Policy (using Pod Security Standards)
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: zoptal-production
+  labels:
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/audit: restricted
+    pod-security.kubernetes.io/warn: restricted
+
+---
+# Network Policy - Default Deny All
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-all
+  namespace: zoptal-production
+  labels:
+    app.kubernetes.io/name: security-policy
+    app.kubernetes.io/component: network-security
+spec:
+  podSelector: {}
+  policyTypes:
+  - Ingress
+  - Egress
+
+---
+# Network Policy - Allow Ingress Controller
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-ingress-controller
+  namespace: zoptal-production
+  labels:
+    app.kubernetes.io/name: security-policy
+    app.kubernetes.io/component: network-security
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/component: frontend
+  policyTypes:
+  - Ingress
+  ingress:
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          name: ingress-nginx
+    ports:
+    - protocol: TCP
+      port: 3000
+
+---
+# Network Policy - Backend Service Communication
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-backend-communication
+  namespace: zoptal-production
+  labels:
+    app.kubernetes.io/name: security-policy
+    app.kubernetes.io/component: network-security
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/component: backend
+  policyTypes:
+  - Ingress
+  - Egress
+  ingress:
+  - from:
+    - podSelector:
+        matchLabels:
+          app.kubernetes.io/component: frontend
+    - podSelector:
+        matchLabels:
+          app.kubernetes.io/component: backend
+    ports:
+    - protocol: TCP
+      port: 4001
+    - protocol: TCP
+      port: 4002
+    - protocol: TCP
+      port: 4003
+    - protocol: TCP
+      port: 4004
+    - protocol: TCP
+      port: 4005
+  egress:
+  # Allow database connections
+  - to:
+    - podSelector:
+        matchLabels:
+          app.kubernetes.io/component: database
+    ports:
+    - protocol: TCP
+      port: 5432
+    - protocol: TCP
+      port: 6379
+  # Allow external API calls (HTTPS)
+  - to: []
+    ports:
+    - protocol: TCP
+      port: 443
+  # Allow DNS
+  - to: []
+    ports:
+    - protocol: UDP
+      port: 53
+
+---
+# Network Policy - Database Access
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-database-access
+  namespace: zoptal-production
+  labels:
+    app.kubernetes.io/name: security-policy
+    app.kubernetes.io/component: network-security
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/component: database
+  policyTypes:
+  - Ingress
+  ingress:
+  - from:
+    - podSelector:
+        matchLabels:
+          app.kubernetes.io/component: backend
+    ports:
+    - protocol: TCP
+      port: 5432
+    - protocol: TCP
+      port: 6379
+
+---
+# RBAC - Service Account for Backend Services
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: zoptal-backend
+  namespace: zoptal-production
+  labels:
+    app.kubernetes.io/name: zoptal-rbac
+    app.kubernetes.io/component: service-account
+automountServiceAccountToken: false
+
+---
+# RBAC - Service Account for Frontend Apps
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: zoptal-frontend
+  namespace: zoptal-production
+  labels:
+    app.kubernetes.io/name: zoptal-rbac
+    app.kubernetes.io/component: service-account
+automountServiceAccountToken: false
+
+---
+# RBAC - Role for Backend Services
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: zoptal-backend-role
+  namespace: zoptal-production
+  labels:
+    app.kubernetes.io/name: zoptal-rbac
+    app.kubernetes.io/component: role
+rules:
+- apiGroups: [""]
+  resources: ["configmaps", "secrets"]
+  verbs: ["get", "list"]
+  resourceNames: ["zoptal-config", "zoptal-secrets"]
+- apiGroups: [""]
+  resources: ["pods"]
+  verbs: ["get", "list"]
+
+---
+# RBAC - RoleBinding for Backend Services
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: zoptal-backend-binding
+  namespace: zoptal-production
+  labels:
+    app.kubernetes.io/name: zoptal-rbac
+    app.kubernetes.io/component: role-binding
+subjects:
+- kind: ServiceAccount
+  name: zoptal-backend
+  namespace: zoptal-production
+roleRef:
+  kind: Role
+  name: zoptal-backend-role
+  apiGroup: rbac.authorization.k8s.io
+
+---
+# Security Context Constraints (for OpenShift compatibility)
+apiVersion: security.openshift.io/v1
+kind: SecurityContextConstraints
+metadata:
+  name: zoptal-restricted
+  labels:
+    app.kubernetes.io/name: zoptal-security
+    app.kubernetes.io/component: security-constraints
+allowHostDirVolumePlugin: false
+allowHostIPC: false
+allowHostNetwork: false
+allowHostPID: false
+allowHostPorts: false
+allowPrivilegeEscalation: false
+allowPrivilegedContainer: false
+allowedCapabilities: null
+defaultAddCapabilities: null
+fsGroup:
+  type: MustRunAs
+  ranges:
+  - min: 1
+    max: 65535
+groups: []
+priority: null
+readOnlyRootFilesystem: true
+requiredDropCapabilities:
+- KILL
+- MKNOD
+- SETUID
+- SETGID
+runAsUser:
+  type: MustRunAsNonRoot
+seLinuxContext:
+  type: MustRunAs
+supplementalGroups:
+  type: MustRunAs
+  ranges:
+  - min: 1
+    max: 65535
+users: []
+volumes:
+- configMap
+- downwardAPI
+- emptyDir
+- persistentVolumeClaim
+- projected
+- secret
+
+---
+# Kubernetes Admission Controller - OPA Gatekeeper Policies
+apiVersion: templates.gatekeeper.sh/v1beta1
+kind: ConstraintTemplate
+metadata:
+  name: k8srequiredsecuritycontext
+  labels:
+    app.kubernetes.io/name: gatekeeper-policy
+    app.kubernetes.io/component: security-template
+spec:
+  crd:
+    spec:
+      names:
+        kind: K8sRequiredSecurityContext
+      validation:
+        type: object
+        properties:
+          runAsNonRoot:
+            type: boolean
+          readOnlyRootFilesystem:
+            type: boolean
+          allowPrivilegeEscalation:
+            type: boolean
+  targets:
+    - target: admission.k8s.gatekeeper.sh
+      rego: |
+        package k8srequiredsecuritycontext
+        
+        violation[{"msg": msg}] {
+          container := input.review.object.spec.containers[_]
+          not container.securityContext.runAsNonRoot
+          msg := "Container must run as non-root user"
+        }
+        
+        violation[{"msg": msg}] {
+          container := input.review.object.spec.containers[_]
+          not container.securityContext.readOnlyRootFilesystem
+          msg := "Container must have read-only root filesystem"
+        }
+        
+        violation[{"msg": msg}] {
+          container := input.review.object.spec.containers[_]
+          container.securityContext.allowPrivilegeEscalation != false
+          msg := "Container must not allow privilege escalation"
+        }
+
+---
+# Gatekeeper Constraint - Enforce Security Context
+apiVersion: constraints.gatekeeper.sh/v1beta1
+kind: K8sRequiredSecurityContext
+metadata:
+  name: must-have-security-context
+  labels:
+    app.kubernetes.io/name: gatekeeper-constraint
+    app.kubernetes.io/component: security-policy
+spec:
+  match:
+    kinds:
+      - apiGroups: ["apps"]
+        kinds: ["Deployment"]
+    namespaces: ["zoptal-production"]
+  parameters:
+    runAsNonRoot: true
+    readOnlyRootFilesystem: true
+    allowPrivilegeEscalation: false
+
+---
+# Falco Security Monitoring Rules
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: falco-rules
+  namespace: zoptal-production
+  labels:
+    app.kubernetes.io/name: falco
+    app.kubernetes.io/component: security-monitoring
+data:
+  zoptal_rules.yaml: |
+    # Zoptal-specific Falco rules for security monitoring
+    
+    - rule: Unexpected network connection in Zoptal backend
+      desc: Detect unexpected network connections from backend services
+      condition: >
+        (k8s_pod and k8s.ns.name=zoptal-production and
+         k8s.pod.label[app.kubernetes.io/component]=backend) and
+        (outbound) and
+        not (fd.port in (443, 5432, 6379)) and
+        not (fd.name contains "api.openai.com" or 
+             fd.name contains "api.anthropic.com" or
+             fd.name contains "api.stripe.com")
+      output: >
+        Unexpected outbound connection from Zoptal backend 
+        (command=%proc.cmdline pid=%proc.pid connection=%fd.name)
+      priority: WARNING
+      tags: [zoptal, network, backend]
+    
+    - rule: Suspicious file access in Zoptal containers
+      desc: Detect suspicious file system access in Zoptal containers
+      condition: >
+        (k8s_pod and k8s.ns.name=zoptal-production) and
+        (open_write) and
+        (fd.name startswith /etc or 
+         fd.name startswith /root or 
+         fd.name startswith /usr/bin or
+         fd.name startswith /usr/sbin)
+      output: >
+        Suspicious file write in Zoptal container 
+        (command=%proc.cmdline pid=%proc.pid file=%fd.name)
+      priority: ERROR
+      tags: [zoptal, filesystem, security]
+    
+    - rule: Privilege escalation attempt in Zoptal
+      desc: Detect privilege escalation attempts
+      condition: >
+        (k8s_pod and k8s.ns.name=zoptal-production) and
+        (proc.name in (su, sudo, setuid)) and
+        not (k8s.pod.label[app.kubernetes.io/name] in (prometheus, grafana))
+      output: >
+        Privilege escalation attempt in Zoptal 
+        (command=%proc.cmdline pid=%proc.pid user=%user.name)
+      priority: CRITICAL
+      tags: [zoptal, privilege, security]
+
+---
+# Image Security Policy with Cosign verification
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: verify-image-signatures
+  labels:
+    app.kubernetes.io/name: kyverno-policy
+    app.kubernetes.io/component: image-security
+spec:
+  validationFailureAction: enforce
+  background: false
+  rules:
+  - name: verify-zoptal-images
+    match:
+      any:
+      - resources:
+          kinds:
+          - Pod
+          namespaces:
+          - zoptal-production
+    verifyImages:
+    - imageReferences:
+      - "ghcr.io/zoptal/*"
+      mutateDigest: true
+      verifyDigest: true
+      required: true
+      attestors:
+      - entries:
+        - keys:
+            publicKeys: |-
+              -----BEGIN PUBLIC KEY-----
+              # Add your Cosign public key here
+              -----END PUBLIC KEY-----
+
+---
+# Resource Quotas for Security
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: security-resource-quota
+  namespace: zoptal-production
+  labels:
+    app.kubernetes.io/name: resource-quota
+    app.kubernetes.io/component: security
+spec:
+  hard:
+    # Limit total resources
+    requests.cpu: "10"
+    requests.memory: 20Gi
+    limits.cpu: "20"
+    limits.memory: 40Gi
+    
+    # Limit number of objects
+    pods: "100"
+    secrets: "50"
+    configmaps: "30"
+    services: "20"
+    persistentvolumeclaims: "10"
+    
+    # Security-related limits
+    count/secrets: "50"
+    count/serviceaccounts: "10"
+
+---
+# Limit Ranges for Pod Security
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: security-limit-range
+  namespace: zoptal-production
+  labels:
+    app.kubernetes.io/name: limit-range
+    app.kubernetes.io/component: security
+spec:
+  limits:
+  - default:
+      cpu: "500m"
+      memory: "512Mi"
+    defaultRequest:
+      cpu: "100m"
+      memory: "128Mi"
+    max:
+      cpu: "2"
+      memory: "4Gi"
+    min:
+      cpu: "50m"
+      memory: "64Mi"
+    type: Container
+  - max:
+      cpu: "4"
+      memory: "8Gi"
+    min:
+      cpu: "100m"
+      memory: "128Mi"
+    type: Pod
+
+---
+# Certificate Management - ClusterIssuer for Internal CA
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: zoptal-internal-ca
+  labels:
+    app.kubernetes.io/name: cert-manager
+    app.kubernetes.io/component: internal-ca
+spec:
+  ca:
+    secretName: zoptal-ca-key-pair
+
+---
+# Certificate for Internal Service Communication
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: zoptal-internal-tls
+  namespace: zoptal-production
+  labels:
+    app.kubernetes.io/name: cert-manager
+    app.kubernetes.io/component: internal-certificate
+spec:
+  secretName: zoptal-internal-tls
+  issuerRef:
+    name: zoptal-internal-ca
+    kind: ClusterIssuer
+  dnsNames:
+  - auth-service.zoptal-production.svc.cluster.local
+  - project-service.zoptal-production.svc.cluster.local
+  - ai-service.zoptal-production.svc.cluster.local
+  - billing-service.zoptal-production.svc.cluster.local
+  - notification-service.zoptal-production.svc.cluster.local
+  - postgres.zoptal-production.svc.cluster.local
+  - redis.zoptal-production.svc.cluster.local

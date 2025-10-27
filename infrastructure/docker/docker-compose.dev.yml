@@ -1,0 +1,139 @@
+version: '3.8'
+
+services:
+  # PostgreSQL Database
+  postgres:
+    image: postgres:16-alpine
+    container_name: zoptal-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: zoptal_dev
+      POSTGRES_USER: zoptal_user
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-development_password}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    networks:
+      - zoptal-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U zoptal_user -d zoptal_dev"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Redis Cache
+  redis:
+    image: redis:7-alpine
+    container_name: zoptal-redis
+    restart: unless-stopped
+    command: redis-server --appendonly yes
+    volumes:
+      - redis_data:/data
+    ports:
+      - "6379:6379"
+    networks:
+      - zoptal-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Auth Service
+  auth-service:
+    build:
+      context: ../../services/auth
+      dockerfile: ../../infrastructure/docker/Dockerfile.node
+    container_name: zoptal-auth-service
+    restart: unless-stopped
+    environment:
+      NODE_ENV: development
+      PORT: 3001
+      DATABASE_URL: postgresql://zoptal_user:${POSTGRES_PASSWORD:-development_password}@postgres:5432/zoptal_dev
+      REDIS_URL: redis://redis:6379
+      JWT_SECRET: ${JWT_SECRET:-development_jwt_secret}
+      JWT_REFRESH_SECRET: ${JWT_REFRESH_SECRET:-development_jwt_refresh_secret}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    ports:
+      - "3001:3001"
+    networks:
+      - zoptal-network
+    volumes:
+      - ../../services/auth:/app
+      - /app/node_modules
+
+  # Main Website
+  web-main:
+    build:
+      context: ../../apps/web-main
+      dockerfile: ../../infrastructure/docker/Dockerfile.nextjs
+    container_name: zoptal-web-main
+    restart: unless-stopped
+    environment:
+      NODE_ENV: development
+      NEXT_PUBLIC_API_URL: http://localhost:3001
+      DATABASE_URL: postgresql://zoptal_user:${POSTGRES_PASSWORD:-development_password}@postgres:5432/zoptal_dev
+      NEXTAUTH_URL: http://localhost:3000
+      NEXTAUTH_SECRET: ${NEXTAUTH_SECRET:-development_nextauth_secret}
+    depends_on:
+      - auth-service
+    ports:
+      - "3000:3000"
+    networks:
+      - zoptal-network
+    volumes:
+      - ../../apps/web-main:/app
+      - /app/node_modules
+      - /app/.next
+
+  # Nginx Reverse Proxy
+  nginx:
+    image: nginx:alpine
+    container_name: zoptal-nginx
+    restart: unless-stopped
+    ports:
+      - "80:80"
+    volumes:
+      - ./nginx/dev.conf:/etc/nginx/nginx.conf:ro
+    depends_on:
+      - web-main
+      - auth-service
+    networks:
+      - zoptal-network
+
+  # Development Tools
+  adminer:
+    image: adminer:latest
+    container_name: zoptal-adminer
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    networks:
+      - zoptal-network
+    environment:
+      ADMINER_DEFAULT_SERVER: postgres
+
+  # Redis Commander
+  redis-commander:
+    image: rediscommander/redis-commander:latest
+    container_name: zoptal-redis-commander
+    restart: unless-stopped
+    environment:
+      - REDIS_HOSTS=local:redis:6379
+    ports:
+      - "8081:8081"
+    networks:
+      - zoptal-network
+
+networks:
+  zoptal-network:
+    driver: bridge
+
+volumes:
+  postgres_data:
+  redis_data:

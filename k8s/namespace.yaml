@@ -1,0 +1,23 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: zoptal
+  labels:
+    name: zoptal
+    environment: production
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: zoptal-dev
+  labels:
+    name: zoptal-dev
+    environment: development
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: zoptal-staging
+  labels:
+    name: zoptal-staging
+    environment: staging

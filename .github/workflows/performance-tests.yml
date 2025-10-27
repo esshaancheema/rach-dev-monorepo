@@ -1,0 +1,425 @@
+name: Performance Tests
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main ]
+  schedule:
+    # Run performance tests nightly at 3 AM UTC
+    - cron: '0 3 * * *'
+  workflow_dispatch:
+    inputs:
+      test_type:
+        description: 'Type of performance test'
+        required: true
+        default: 'load'
+        type: choice
+        options:
+          - smoke
+          - load
+          - stress
+          - spike
+          - volume
+          - endurance
+      environment:
+        description: 'Target environment'
+        required: true
+        default: 'staging'
+        type: choice
+        options:
+          - local
+          - staging
+          - production
+      duration:
+        description: 'Test duration (e.g., 5m, 10m)'
+        required: false
+        default: '5m'
+      vus:
+        description: 'Number of virtual users'
+        required: false
+        default: '50'
+
+env:
+  NODE_VERSION: '18'
+  K6_VERSION: '0.47.0'
+  POSTGRES_DB: zoptal_perf_test
+  POSTGRES_USER: postgres
+  POSTGRES_PASSWORD: postgres
+  REDIS_URL: redis://localhost:6379
+
+jobs:
+  performance-test:
+    name: K6 Performance Testing
+    runs-on: ubuntu-latest
+    
+    strategy:
+      matrix:
+        test_type: 
+          - ${{ github.event.inputs.test_type || 'load' }}
+    
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_DB: ${{ env.POSTGRES_DB }}
+          POSTGRES_USER: ${{ env.POSTGRES_USER }}
+          POSTGRES_PASSWORD: ${{ env.POSTGRES_PASSWORD }}
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
+          
+      redis:
+        image: redis:7
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 6379:6379
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+
+      - name: Install K6
+        run: |
+          sudo gpg -k
+          sudo gpg --no-default-keyring --keyring /usr/share/keyrings/k6-archive-keyring.gpg --keyserver hkp://keyserver.ubuntu.com:80 --recv-keys C5AD17C747E3415A3642D57D77C6C491D6AC1D69
+          echo "deb [signed-by=/usr/share/keyrings/k6-archive-keyring.gpg] https://dl.k6.io/deb stable main" | sudo tee /etc/apt/sources.list.d/k6.list
+          sudo apt-get update
+          sudo apt-get install k6=${{ env.K6_VERSION }}
+
+      - name: Verify K6 installation
+        run: k6 version
+
+      - name: Install project dependencies
+        run: |
+          npm ci
+          cd services/auth-service && npm ci
+
+      - name: Setup test environment
+        run: |
+          cp services/auth-service/.env.example services/auth-service/.env
+          cat >> services/auth-service/.env << EOF
+          DATABASE_URL=postgresql://postgres:postgres@localhost:5432/${{ env.POSTGRES_DB }}
+          REDIS_URL=redis://localhost:6379
+          JWT_SECRET=perf-test-jwt-secret-$(openssl rand -hex 32)
+          NODE_ENV=test
+          API_URL=http://localhost:3000
+          LOG_LEVEL=warn
+          ENABLE_REQUEST_LOGGING=false
+          EOF
+
+      - name: Setup database
+        run: |
+          cd services/auth-service
+          npx prisma migrate deploy
+          npx prisma generate
+
+      - name: Build and start auth service
+        run: |
+          cd services/auth-service
+          npm run build
+          npm start &
+          
+          # Wait for service to be ready with timeout
+          timeout 120 bash -c 'until curl -f http://localhost:3000/health; do sleep 2; done'
+          
+          # Verify service is responding
+          curl -f http://localhost:3000/api || exit 1
+        env:
+          NODE_ENV: test
+
+      - name: Run performance test
+        run: |
+          cd services/auth-service
+          chmod +x scripts/performance/run-performance-tests.sh
+          
+          # Set test parameters
+          TEST_TYPE="${{ matrix.test_type }}"
+          ENVIRONMENT="${{ github.event.inputs.environment || 'local' }}"
+          DURATION="${{ github.event.inputs.duration || '5m' }}"
+          VUS="${{ github.event.inputs.vus || '50' }}"
+          
+          # Run the performance test
+          ./scripts/performance/run-performance-tests.sh \
+            "$TEST_TYPE" \
+            --env "$ENVIRONMENT" \
+            --url "http://localhost:3000" \
+            --duration "$DURATION" \
+            --vus "$VUS" \
+            --tag "ci-cd" \
+            --tag "github-actions" \
+            --quiet
+        env:
+          API_URL: http://localhost:3000
+          TEST_ENV: ci
+
+      - name: Collect system metrics
+        if: always()
+        run: |
+          echo "=== System Resources ==="
+          free -h
+          df -h
+          top -bn1 | head -20
+          
+          echo "=== Service Logs ==="
+          curl -s http://localhost:3000/metrics || echo "Could not fetch metrics"
+          
+          echo "=== Docker Stats ==="
+          docker stats --no-stream || echo "No Docker containers running"
+
+      - name: Parse performance results
+        if: always()
+        run: |
+          cd services/auth-service
+          
+          # Find the latest performance report
+          LATEST_REPORT=$(find performance-reports -name "test_*" -type d | sort | tail -1)
+          
+          if [ -d "$LATEST_REPORT" ]; then
+            echo "Found performance report: $LATEST_REPORT"
+            
+            # Extract key metrics if JSON summary exists
+            if [ -f "$LATEST_REPORT/performance-results.json" ]; then
+              echo "=== Performance Summary ==="
+              cat "$LATEST_REPORT/performance-results.json" | jq -r '
+                "Test Duration: " + (.state.testRunDurationMs / 1000 | tostring) + "s",
+                "Total Requests: " + (.metrics.http_reqs.count | tostring),
+                "Avg Response Time: " + (.metrics.http_req_duration.avg | tostring) + "ms",
+                "95th Percentile: " + (.metrics.http_req_duration["p(95)"] | tostring) + "ms",
+                "Error Rate: " + ((.metrics.http_req_failed.rate * 100) | tostring) + "%",
+                "Requests/sec: " + (.metrics.http_reqs.rate | tostring)
+              ' || echo "Could not parse JSON results"
+            fi
+            
+            # Set outputs for other jobs
+            echo "PERFORMANCE_REPORT_DIR=$LATEST_REPORT" >> $GITHUB_ENV
+          else
+            echo "No performance report found"
+          fi
+
+      - name: Upload performance reports
+        uses: actions/upload-artifact@v3
+        if: always()
+        with:
+          name: performance-reports-${{ matrix.test_type }}-${{ github.run_number }}
+          path: |
+            services/auth-service/performance-reports/
+          retention-days: 30
+
+      - name: Comment on PR with performance results
+        if: github.event_name == 'pull_request' && always()
+        uses: actions/github-script@v6
+        with:
+          script: |
+            const fs = require('fs');
+            const path = require('path');
+            
+            try {
+              // Find the latest performance report
+              const reportsDir = 'services/auth-service/performance-reports';
+              const reportDirs = fs.readdirSync(reportsDir)
+                .filter(dir => dir.startsWith('test_'))
+                .sort()
+                .reverse();
+              
+              if (reportDirs.length === 0) {
+                console.log('No performance reports found');
+                return;
+              }
+              
+              const latestReport = path.join(reportsDir, reportDirs[0]);
+              const resultsFile = path.join(latestReport, 'performance-results.json');
+              
+              if (!fs.existsSync(resultsFile)) {
+                console.log('No performance results JSON found');
+                return;
+              }
+              
+              const results = JSON.parse(fs.readFileSync(resultsFile, 'utf8'));
+              const metrics = results.metrics;
+              
+              // Calculate key metrics
+              const totalRequests = metrics.http_reqs?.count || 0;
+              const avgResponseTime = Math.round(metrics.http_req_duration?.avg || 0);
+              const p95ResponseTime = Math.round(metrics.http_req_duration?.['p(95)'] || 0);
+              const errorRate = ((metrics.http_req_failed?.rate || 0) * 100).toFixed(2);
+              const requestsPerSec = Math.round(metrics.http_reqs?.rate || 0);
+              const testDuration = Math.round((results.state?.testRunDurationMs || 0) / 1000);
+              
+              // Determine performance status
+              const performanceStatus = errorRate < 1 && p95ResponseTime < 2000 ? '✅ Good' : 
+                                      errorRate < 5 && p95ResponseTime < 5000 ? '⚠️ Warning' : '❌ Poor';
+              
+              const comment = `## 🚀 Performance Test Results - ${{ matrix.test_type }}
+              
+              **Test Configuration:**
+              - **Type**: ${{ matrix.test_type }}
+              - **Environment**: ${{ github.event.inputs.environment || 'local' }}
+              - **Duration**: ${testDuration}s
+              - **Virtual Users**: ${{ github.event.inputs.vus || '50' }}
+              
+              **Performance Metrics:**
+              - **Status**: ${performanceStatus}
+              - **Total Requests**: ${totalRequests.toLocaleString()}
+              - **Requests/sec**: ${requestsPerSec}
+              - **Avg Response Time**: ${avgResponseTime}ms
+              - **95th Percentile**: ${p95ResponseTime}ms
+              - **Error Rate**: ${errorRate}%
+              
+              **Thresholds:**
+              ${p95ResponseTime > 2000 ? '⚠️ 95th percentile response time exceeds 2000ms' : '✅ Response time within acceptable range'}
+              ${errorRate > 1 ? '⚠️ Error rate exceeds 1%' : '✅ Error rate within acceptable range'}
+              ${requestsPerSec < 10 ? '⚠️ Low throughput detected' : '✅ Throughput within expected range'}
+              
+              Full performance report is available in the workflow artifacts.
+              
+              <details>
+              <summary>📊 Detailed Metrics</summary>
+              
+              \`\`\`json
+              ${JSON.stringify({
+                http_reqs: metrics.http_reqs,
+                http_req_duration: metrics.http_req_duration,
+                http_req_failed: metrics.http_req_failed
+              }, null, 2)}
+              \`\`\`
+              </details>`;
+              
+              await github.rest.issues.createComment({
+                issue_number: context.issue.number,
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                body: comment
+              });
+              
+            } catch (error) {
+              console.log('Could not create performance comment:', error.message);
+            }
+
+      - name: Performance regression check
+        if: github.event_name == 'pull_request'
+        run: |
+          cd services/auth-service
+          
+          # Simple performance regression check
+          LATEST_REPORT=$(find performance-reports -name "test_*" -type d | sort | tail -1)
+          
+          if [ -d "$LATEST_REPORT" ] && [ -f "$LATEST_REPORT/performance-results.json" ]; then
+            ERROR_RATE=$(cat "$LATEST_REPORT/performance-results.json" | jq -r '.metrics.http_req_failed.rate // 0')
+            P95_TIME=$(cat "$LATEST_REPORT/performance-results.json" | jq -r '.metrics.http_req_duration["p(95)"] // 0')
+            
+            echo "Error Rate: $ERROR_RATE"
+            echo "95th Percentile: $P95_TIME ms"
+            
+            # Fail if performance is significantly degraded
+            if (( $(echo "$ERROR_RATE > 0.1" | bc -l) )); then
+              echo "❌ Performance regression: Error rate too high ($ERROR_RATE)"
+              exit 1
+            fi
+            
+            if (( $(echo "$P95_TIME > 5000" | bc -l) )); then
+              echo "❌ Performance regression: Response time too high ($P95_TIME ms)"
+              exit 1
+            fi
+            
+            echo "✅ Performance check passed"
+          else
+            echo "⚠️ No performance data to check"
+          fi
+
+  benchmark-comparison:
+    name: Benchmark Comparison
+    runs-on: ubuntu-latest
+    needs: performance-test
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Download performance reports
+        uses: actions/download-artifact@v3
+        with:
+          path: ./performance-reports
+
+      - name: Compare with baseline
+        run: |
+          echo "=== Performance Benchmark Comparison ==="
+          
+          # This is a placeholder for more sophisticated benchmark comparison
+          # In a real implementation, you would:
+          # 1. Store baseline performance metrics
+          # 2. Compare current results with baseline
+          # 3. Alert on significant regressions
+          # 4. Update baseline if performance improves
+          
+          echo "Baseline comparison would be implemented here"
+          echo "Current implementation: Basic performance validation"
+
+      - name: Update performance dashboard
+        run: |
+          echo "=== Updating Performance Dashboard ==="
+          
+          # This is where you would update your performance monitoring dashboard
+          # Examples:
+          # - Send metrics to InfluxDB/Grafana
+          # - Update performance tracking spreadsheet
+          # - Post to Slack/Teams with results
+          # - Store in database for trend analysis
+          
+          echo "Dashboard update would be implemented here"
+
+  cleanup:
+    name: Cleanup Test Environment
+    runs-on: ubuntu-latest
+    needs: [performance-test, benchmark-comparison]
+    if: always()
+    
+    steps:
+      - name: Cleanup test data
+        run: |
+          echo "=== Cleaning up test environment ==="
+          
+          # Cleanup any test data, temporary resources, etc.
+          # This step ensures we don't leave behind test artifacts
+          
+          echo "Cleanup completed"
+
+  notification:
+    name: Send Notifications
+    runs-on: ubuntu-latest
+    needs: [performance-test, benchmark-comparison]
+    if: failure() && (github.event_name == 'schedule' || github.event_name == 'push')
+    
+    steps:
+      - name: Send failure notification
+        run: |
+          echo "=== Performance Test Failure Notification ==="
+          
+          # This is where you would send notifications on performance test failures
+          # Examples:
+          # - Send email to dev team
+          # - Post to Slack channel
+          # - Create GitHub issue
+          # - Send PagerDuty alert
+          
+          echo "Notification would be sent here"
+          echo "Test Type: ${{ github.event.inputs.test_type || 'load' }}"
+          echo "Branch: ${{ github.ref_name }}"
+          echo "Commit: ${{ github.sha }}"

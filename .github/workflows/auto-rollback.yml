@@ -1,0 +1,376 @@
+name: Automated Rollback
+
+on:
+  workflow_dispatch:
+    inputs:
+      service:
+        description: 'Service to rollback'
+        required: true
+        type: choice
+        options:
+          - auth-service
+          - project-service
+          - ai-service
+          - billing-service
+          - notification-service
+          - analytics-service
+          - web-main
+          - admin
+      environment:
+        description: 'Target environment'
+        required: true
+        type: choice
+        options:
+          - staging
+          - production
+      rollback-to:
+        description: 'Rollback target'
+        required: false
+        type: choice
+        default: 'previous'
+        options:
+          - previous
+          - specific-version
+          - last-known-good
+      specific-version:
+        description: 'Specific version to rollback to (if selected above)'
+        required: false
+        type: string
+      reason:
+        description: 'Reason for rollback'
+        required: true
+        type: string
+
+  repository_dispatch:
+    types: [auto-rollback]
+
+env:
+  AWS_REGION: us-east-1
+  ECR_REGISTRY: ${{ secrets.ECR_REGISTRY }}
+  KUBE_CONFIG_DATA: ${{ secrets.KUBE_CONFIG_DATA }}
+
+jobs:
+  validate-rollback:
+    runs-on: ubuntu-latest
+    outputs:
+      rollback-version: ${{ steps.validate.outputs.rollback-version }}
+      current-version: ${{ steps.validate.outputs.current-version }}
+      rollback-confirmed: ${{ steps.validate.outputs.rollback-confirmed }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup kubectl
+        uses: azure/setup-kubectl@v3
+
+      - name: Configure kubeconfig
+        run: |
+          echo "${{ env.KUBE_CONFIG_DATA }}" | base64 -d > kubeconfig
+          export KUBECONFIG=kubeconfig
+
+      - name: Validate rollback request
+        id: validate
+        run: |
+          export KUBECONFIG=kubeconfig
+          
+          # Get service details
+          SERVICE="${{ github.event_name == 'repository_dispatch' && github.event.client_payload.service || inputs.service }}"
+          ENVIRONMENT="${{ github.event_name == 'repository_dispatch' && github.event.client_payload.environment || inputs.environment }}"
+          
+          echo "Validating rollback for $SERVICE in $ENVIRONMENT"
+          
+          # Get current version
+          CURRENT_VERSION=$(kubectl get deployment $SERVICE -n $ENVIRONMENT -o jsonpath='{.spec.template.spec.containers[0].image}' | cut -d':' -f2)
+          echo "current-version=$CURRENT_VERSION" >> $GITHUB_OUTPUT
+          echo "Current version: $CURRENT_VERSION"
+          
+          # Determine rollback target
+          ROLLBACK_TARGET="${{ github.event_name == 'repository_dispatch' && github.event.client_payload.rollback_to || inputs.rollback-to }}"
+          
+          case $ROLLBACK_TARGET in
+            previous)
+              # Get previous version from rollout history
+              ROLLBACK_VERSION=$(kubectl rollout history deployment/$SERVICE -n $ENVIRONMENT --revision=$(kubectl rollout history deployment/$SERVICE -n $ENVIRONMENT | tail -2 | head -1 | awk '{print $1}') -o jsonpath='{.spec.template.spec.containers[0].image}' | cut -d':' -f2)
+              ;;
+            specific-version)
+              ROLLBACK_VERSION="${{ inputs.specific-version }}"
+              ;;
+            last-known-good)
+              # Get last known good version from deployment tracking
+              ROLLBACK_VERSION=$(curl -s "${{ secrets.DEPLOYMENT_TRACKER_URL }}/api/deployments/last-known-good?service=$SERVICE&environment=$ENVIRONMENT" | jq -r '.version')
+              ;;
+          esac
+          
+          echo "rollback-version=$ROLLBACK_VERSION" >> $GITHUB_OUTPUT
+          echo "Rollback target version: $ROLLBACK_VERSION"
+          
+          # Validate rollback version exists
+          if [ "$ROLLBACK_VERSION" = "null" ] || [ -z "$ROLLBACK_VERSION" ]; then
+            echo "❌ No valid rollback version found"
+            echo "rollback-confirmed=false" >> $GITHUB_OUTPUT
+            exit 1
+          fi
+          
+          # Check if versions are different
+          if [ "$CURRENT_VERSION" = "$ROLLBACK_VERSION" ]; then
+            echo "❌ Current version and rollback version are the same"
+            echo "rollback-confirmed=false" >> $GITHUB_OUTPUT
+            exit 1
+          fi
+          
+          # Verify image exists in registry
+          aws ecr describe-images --repository-name $SERVICE --image-ids imageTag=$ROLLBACK_VERSION --region ${{ env.AWS_REGION }} >/dev/null 2>&1
+          if [ $? -ne 0 ]; then
+            echo "❌ Rollback image not found in registry"
+            echo "rollback-confirmed=false" >> $GITHUB_OUTPUT
+            exit 1
+          fi
+          
+          echo "✅ Rollback validation passed"
+          echo "rollback-confirmed=true" >> $GITHUB_OUTPUT
+
+  pre-rollback-snapshot:
+    runs-on: ubuntu-latest
+    needs: validate-rollback
+    if: needs.validate-rollback.outputs.rollback-confirmed == 'true'
+    steps:
+      - name: Create pre-rollback snapshot
+        run: |
+          export KUBECONFIG=kubeconfig
+          echo "${{ env.KUBE_CONFIG_DATA }}" | base64 -d > kubeconfig
+          
+          SERVICE="${{ github.event_name == 'repository_dispatch' && github.event.client_payload.service || inputs.service }}"
+          ENVIRONMENT="${{ github.event_name == 'repository_dispatch' && github.event.client_payload.environment || inputs.environment }}"
+          TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+          
+          # Create snapshot of current deployment
+          kubectl get deployment $SERVICE -n $ENVIRONMENT -o yaml > pre-rollback-snapshot-$TIMESTAMP.yaml
+          
+          # Store snapshot
+          aws s3 cp pre-rollback-snapshot-$TIMESTAMP.yaml \
+            s3://${{ secrets.DEPLOYMENT_SNAPSHOTS_BUCKET }}/rollbacks/$SERVICE/$ENVIRONMENT/
+          
+          # Store in deployment tracking
+          curl -X POST "${{ secrets.DEPLOYMENT_TRACKER_URL }}/api/snapshots" \
+            -H "Content-Type: application/json" \
+            -H "Authorization: Bearer ${{ secrets.DEPLOYMENT_TRACKER_TOKEN }}" \
+            -d '{
+              "service": "'$SERVICE'",
+              "environment": "'$ENVIRONMENT'",
+              "version": "'${{ needs.validate-rollback.outputs.current-version }}'",
+              "type": "pre-rollback",
+              "timestamp": "'$(date -u +%Y-%m-%dT%H:%M:%SZ)'",
+              "s3Location": "s3://${{ secrets.DEPLOYMENT_SNAPSHOTS_BUCKET }}/rollbacks/'$SERVICE'/'$ENVIRONMENT'/pre-rollback-snapshot-'$TIMESTAMP'.yaml"
+            }'
+
+  execute-rollback:
+    runs-on: ubuntu-latest
+    needs: [validate-rollback, pre-rollback-snapshot]
+    environment: ${{ github.event_name == 'repository_dispatch' && github.event.client_payload.environment || inputs.environment }}-rollback
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup kubectl
+        uses: azure/setup-kubectl@v3
+
+      - name: Configure kubeconfig
+        run: |
+          echo "${{ env.KUBE_CONFIG_DATA }}" | base64 -d > kubeconfig
+          export KUBECONFIG=kubeconfig
+
+      - name: Execute rollback
+        run: |
+          export KUBECONFIG=kubeconfig
+          
+          SERVICE="${{ github.event_name == 'repository_dispatch' && github.event.client_payload.service || inputs.service }}"
+          ENVIRONMENT="${{ github.event_name == 'repository_dispatch' && github.event.client_payload.environment || inputs.environment }}"
+          ROLLBACK_VERSION="${{ needs.validate-rollback.outputs.rollback-version }}"
+          
+          echo "🔄 Starting rollback of $SERVICE to version $ROLLBACK_VERSION"
+          
+          # Update deployment image
+          kubectl set image deployment/$SERVICE \
+            $SERVICE=${{ env.ECR_REGISTRY }}/$SERVICE:$ROLLBACK_VERSION \
+            -n $ENVIRONMENT
+          
+          # Wait for rollout to complete
+          kubectl rollout status deployment/$SERVICE -n $ENVIRONMENT --timeout=600s
+          
+          echo "✅ Rollback deployment completed"
+
+      - name: Verify rollback
+        run: |
+          export KUBECONFIG=kubeconfig
+          
+          SERVICE="${{ github.event_name == 'repository_dispatch' && github.event.client_payload.service || inputs.service }}"
+          ENVIRONMENT="${{ github.event_name == 'repository_dispatch' && github.event.client_payload.environment || inputs.environment }}"
+          
+          # Health check
+          echo "🏥 Performing health checks..."
+          
+          # Wait for pods to be ready
+          kubectl wait --for=condition=ready pod -l app=$SERVICE -n $ENVIRONMENT --timeout=300s
+          
+          # Check service health endpoint
+          kubectl port-forward service/$SERVICE 8080:80 -n $ENVIRONMENT &
+          PF_PID=$!
+          
+          sleep 10
+          
+          for i in {1..30}; do
+            if curl -f http://localhost:8080/health; then
+              echo "✅ Health check passed"
+              kill $PF_PID
+              break
+            fi
+            
+            if [ $i -eq 30 ]; then
+              echo "❌ Health check failed after 30 attempts"
+              kill $PF_PID
+              exit 1
+            fi
+            
+            echo "Health check attempt $i failed, retrying..."
+            sleep 10
+          done
+
+      - name: Run smoke tests
+        run: |
+          SERVICE="${{ github.event_name == 'repository_dispatch' && github.event.client_payload.service || inputs.service }}"
+          ENVIRONMENT="${{ github.event_name == 'repository_dispatch' && github.event.client_payload.environment || inputs.environment }}"
+          
+          echo "🧪 Running smoke tests..."
+          
+          # Install dependencies for testing
+          npm ci
+          
+          # Run service-specific smoke tests
+          npm run test:smoke -- --service=$SERVICE --environment=$ENVIRONMENT
+          
+          echo "✅ Smoke tests passed"
+
+  post-rollback-monitoring:
+    runs-on: ubuntu-latest
+    needs: [validate-rollback, execute-rollback]
+    steps:
+      - name: Monitor post-rollback metrics
+        run: |
+          SERVICE="${{ github.event_name == 'repository_dispatch' && github.event.client_payload.service || inputs.service }}"
+          ENVIRONMENT="${{ github.event_name == 'repository_dispatch' && github.event.client_payload.environment || inputs.environment }}"
+          
+          echo "📊 Monitoring post-rollback metrics for 10 minutes..."
+          
+          for i in {1..60}; do
+            echo "Monitoring iteration $i/60"
+            
+            # Get current metrics
+            ERROR_RATE=$(curl -s "http://prometheus:9090/api/v1/query?query=rate(http_requests_total{job=\"$SERVICE\",code=~\"5..\"}[5m])" | jq -r '.data.result[0].value[1] // "0"')
+            LATENCY=$(curl -s "http://prometheus:9090/api/v1/query?query=histogram_quantile(0.95,rate(http_request_duration_seconds_bucket{job=\"$SERVICE\"}[5m]))" | jq -r '.data.result[0].value[1] // "0"')
+            CPU_USAGE=$(curl -s "http://prometheus:9090/api/v1/query?query=avg(rate(container_cpu_usage_seconds_total{pod=~\"$SERVICE-.*\"}[5m]))" | jq -r '.data.result[0].value[1] // "0"')
+            MEMORY_USAGE=$(curl -s "http://prometheus:9090/api/v1/query?query=avg(container_memory_usage_bytes{pod=~\"$SERVICE-.*\"})" | jq -r '.data.result[0].value[1] // "0"')
+            
+            echo "Error Rate: $ERROR_RATE"
+            echo "P95 Latency: $LATENCY"
+            echo "CPU Usage: $CPU_USAGE"
+            echo "Memory Usage: $MEMORY_USAGE"
+            
+            # Alert if metrics are concerning
+            if (( $(echo "$ERROR_RATE > 0.05" | bc -l) )); then
+              echo "⚠️ High error rate detected: $ERROR_RATE"
+              curl -X POST ${{ secrets.SLACK_WEBHOOK_URL }} \
+                -H 'Content-type: application/json' \
+                -d '{
+                  "text": "⚠️ High error rate detected after rollback of '$SERVICE' in '$ENVIRONMENT': '$ERROR_RATE'",
+                  "channel": "#alerts"
+                }'
+            fi
+            
+            sleep 10
+          done
+          
+          echo "✅ Post-rollback monitoring completed"
+
+  update-deployment-tracking:
+    runs-on: ubuntu-latest
+    needs: [validate-rollback, execute-rollback, post-rollback-monitoring]
+    if: always()
+    steps:
+      - name: Update deployment tracking
+        run: |
+          SERVICE="${{ github.event_name == 'repository_dispatch' && github.event.client_payload.service || inputs.service }}"
+          ENVIRONMENT="${{ github.event_name == 'repository_dispatch' && github.event.client_payload.environment || inputs.environment }}"
+          REASON="${{ github.event_name == 'repository_dispatch' && github.event.client_payload.reason || inputs.reason }}"
+          
+          STATUS="success"
+          if [ "${{ needs.execute-rollback.result }}" != "success" ]; then
+            STATUS="failed"
+          fi
+          
+          # Record rollback in tracking system
+          curl -X POST "${{ secrets.DEPLOYMENT_TRACKER_URL }}/api/rollbacks" \
+            -H "Content-Type: application/json" \
+            -H "Authorization: Bearer ${{ secrets.DEPLOYMENT_TRACKER_TOKEN }}" \
+            -d '{
+              "service": "'$SERVICE'",
+              "environment": "'$ENVIRONMENT'",
+              "fromVersion": "'${{ needs.validate-rollback.outputs.current-version }}'",
+              "toVersion": "'${{ needs.validate-rollback.outputs.rollback-version }}'",
+              "reason": "'$REASON'",
+              "status": "'$STATUS'",
+              "timestamp": "'$(date -u +%Y-%m-%dT%H:%M:%SZ)'",
+              "triggeredBy": "${{ github.actor }}",
+              "automatedRollback": '${{ github.event_name == 'repository_dispatch' }}'
+            }'
+
+  notify-rollback-status:
+    runs-on: ubuntu-latest
+    needs: [validate-rollback, execute-rollback, post-rollback-monitoring]
+    if: always()
+    steps:
+      - name: Determine rollback status
+        id: status
+        run: |
+          if [ "${{ needs.execute-rollback.result }}" == "success" ]; then
+            echo "status=success" >> $GITHUB_OUTPUT
+            echo "emoji=✅" >> $GITHUB_OUTPUT
+            echo "message=Rollback completed successfully" >> $GITHUB_OUTPUT
+          else
+            echo "status=failure" >> $GITHUB_OUTPUT
+            echo "emoji=❌" >> $GITHUB_OUTPUT
+            echo "message=Rollback failed" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Notify teams
+        uses: 8398a7/action-slack@v3
+        with:
+          status: ${{ steps.status.outputs.status }}
+          channel: '#deployments'
+          text: |
+            ${{ steps.status.outputs.emoji }} ${{ steps.status.outputs.message }}
+            
+            Service: ${{ github.event_name == 'repository_dispatch' && github.event.client_payload.service || inputs.service }}
+            Environment: ${{ github.event_name == 'repository_dispatch' && github.event.client_payload.environment || inputs.environment }}
+            From: ${{ needs.validate-rollback.outputs.current-version }}
+            To: ${{ needs.validate-rollback.outputs.rollback-version }}
+            Reason: ${{ github.event_name == 'repository_dispatch' && github.event.client_payload.reason || inputs.reason }}
+            Triggered by: ${{ github.actor }}
+            Type: ${{ github.event_name == 'repository_dispatch' && 'Automated' || 'Manual' }}
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+
+      - name: Create incident if rollback failed
+        if: needs.execute-rollback.result != 'success'
+        run: |
+          # Create incident in incident management system
+          curl -X POST "${{ secrets.INCIDENT_MANAGEMENT_URL }}/api/incidents" \
+            -H "Content-Type: application/json" \
+            -H "Authorization: Bearer ${{ secrets.INCIDENT_MANAGEMENT_TOKEN }}" \
+            -d '{
+              "title": "Failed Rollback: ${{ github.event_name == '\''repository_dispatch'\'' && github.event.client_payload.service || inputs.service }}",
+              "description": "Automated rollback failed for service in ${{ github.event_name == '\''repository_dispatch'\'' && github.event.client_payload.environment || inputs.environment }} environment",
+              "severity": "high",
+              "service": "${{ github.event_name == '\''repository_dispatch'\'' && github.event.client_payload.service || inputs.service }}",
+              "environment": "${{ github.event_name == '\''repository_dispatch'\'' && github.event.client_payload.environment || inputs.environment }}",
+              "tags": ["rollback-failure", "automated"]
+            }'

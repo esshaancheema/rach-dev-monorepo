@@ -1,0 +1,1508 @@
+openapi: 3.0.3
+info:
+  title: Zoptal Admin API
+  description: |
+    Administrative API for managing the Zoptal platform. This API provides
+    comprehensive administrative capabilities including user management,
+    system monitoring, configuration, and platform analytics.
+    
+    **Access Level: Admin Only**
+    All endpoints in this API require administrator privileges.
+    
+  version: 1.0.0
+  contact:
+    name: Zoptal Admin Support
+    email: admin@zoptal.com
+
+servers:
+  - url: https://api.zoptal.com/admin
+    description: Production server
+  - url: http://localhost:4000/admin
+    description: Local development server
+
+security:
+  - BearerAuth: []
+
+tags:
+  - name: Users
+    description: User management operations
+  - name: Projects
+    description: Project administration
+  - name: System
+    description: System monitoring and configuration
+  - name: Analytics
+    description: Platform-wide analytics
+  - name: Billing
+    description: Billing and subscription administration
+  - name: Security
+    description: Security and audit operations
+
+paths:
+  # User Management
+  /users:
+    get:
+      tags:
+        - Users
+      summary: List all users
+      description: Get a paginated list of all platform users
+      operationId: listUsers
+      parameters:
+        - name: page
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            default: 1
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 20
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [active, inactive, suspended, pending]
+        - name: role
+          in: query
+          schema:
+            type: string
+            enum: [user, admin, developer]
+        - name: search
+          in: query
+          schema:
+            type: string
+          description: Search by email, name, or ID
+        - name: sortBy
+          in: query
+          schema:
+            type: string
+            enum: [createdAt, lastLogin, email, name]
+            default: createdAt
+        - name: sortOrder
+          in: query
+          schema:
+            type: string
+            enum: [asc, desc]
+            default: desc
+      responses:
+        '200':
+          description: Users retrieved successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserListResponse'
+
+  /users/{userId}:
+    get:
+      tags:
+        - Users
+      summary: Get user details
+      description: Get detailed information about a specific user
+      operationId: getUser
+      parameters:
+        - name: userId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: User details retrieved successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminUserDetails'
+
+    put:
+      tags:
+        - Users
+      summary: Update user
+      description: Update user information and settings
+      operationId: updateUser
+      parameters:
+        - name: userId
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateUserRequest'
+      responses:
+        '200':
+          description: User updated successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminUserDetails'
+
+    delete:
+      tags:
+        - Users
+      summary: Delete user
+      description: Delete a user account (soft delete)
+      operationId: deleteUser
+      parameters:
+        - name: userId
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: force
+          in: query
+          schema:
+            type: boolean
+            default: false
+          description: Force delete (hard delete)
+      responses:
+        '200':
+          description: User deleted successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MessageResponse'
+
+  /users/{userId}/suspend:
+    post:
+      tags:
+        - Users
+      summary: Suspend user
+      description: Suspend a user account
+      operationId: suspendUser
+      parameters:
+        - name: userId
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SuspendUserRequest'
+      responses:
+        '200':
+          description: User suspended successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MessageResponse'
+
+  /users/{userId}/unsuspend:
+    post:
+      tags:
+        - Users
+      summary: Unsuspend user
+      description: Remove suspension from a user account
+      operationId: unsuspendUser
+      parameters:
+        - name: userId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: User unsuspended successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MessageResponse'
+
+  /users/{userId}/impersonate:
+    post:
+      tags:
+        - Users
+      summary: Impersonate user
+      description: Generate impersonation token for user account
+      operationId: impersonateUser
+      parameters:
+        - name: userId
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ImpersonateRequest'
+      responses:
+        '200':
+          description: Impersonation token generated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ImpersonateResponse'
+
+  # Project Management
+  /projects:
+    get:
+      tags:
+        - Projects
+      summary: List all projects
+      description: Get a paginated list of all platform projects
+      operationId: listAllProjects
+      parameters:
+        - name: page
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            default: 1
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 20
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [active, archived, completed]
+        - name: visibility
+          in: query
+          schema:
+            type: string
+            enum: [private, public, team]
+        - name: search
+          in: query
+          schema:
+            type: string
+        - name: userId
+          in: query
+          schema:
+            type: string
+          description: Filter by project owner
+      responses:
+        '200':
+          description: Projects retrieved successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminProjectListResponse'
+
+  /projects/{projectId}:
+    get:
+      tags:
+        - Projects
+      summary: Get project details
+      description: Get detailed information about a specific project
+      operationId: getProjectDetails
+      parameters:
+        - name: projectId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Project details retrieved successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminProjectDetails'
+
+    delete:
+      tags:
+        - Projects
+      summary: Delete project
+      description: Delete a project (admin override)
+      operationId: deleteProjectAdmin
+      parameters:
+        - name: projectId
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: force
+          in: query
+          schema:
+            type: boolean
+            default: false
+      responses:
+        '200':
+          description: Project deleted successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MessageResponse'
+
+  # System Management
+  /system/health:
+    get:
+      tags:
+        - System
+      summary: System health check
+      description: Get overall system health status
+      operationId: getSystemHealth
+      responses:
+        '200':
+          description: System health retrieved successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SystemHealthResponse'
+
+  /system/metrics:
+    get:
+      tags:
+        - System
+      summary: System metrics
+      description: Get system performance and usage metrics
+      operationId: getSystemMetrics
+      parameters:
+        - name: period
+          in: query
+          schema:
+            type: string
+            enum: [hour, day, week, month]
+            default: day
+        - name: services
+          in: query
+          schema:
+            type: array
+            items:
+              type: string
+              enum: [auth, project, ai, billing, notification, analytics]
+      responses:
+        '200':
+          description: System metrics retrieved successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SystemMetricsResponse'
+
+  /system/config:
+    get:
+      tags:
+        - System
+      summary: Get system configuration
+      description: Get current system configuration
+      operationId: getSystemConfig
+      responses:
+        '200':
+          description: System configuration retrieved successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SystemConfigResponse'
+
+    put:
+      tags:
+        - System
+      summary: Update system configuration
+      description: Update system configuration settings
+      operationId: updateSystemConfig
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateSystemConfigRequest'
+      responses:
+        '200':
+          description: System configuration updated successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MessageResponse'
+
+  /system/maintenance:
+    post:
+      tags:
+        - System
+      summary: Enable maintenance mode
+      description: Put the system into maintenance mode
+      operationId: enableMaintenanceMode
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/MaintenanceModeRequest'
+      responses:
+        '200':
+          description: Maintenance mode enabled
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MessageResponse'
+
+    delete:
+      tags:
+        - System
+      summary: Disable maintenance mode
+      description: Take the system out of maintenance mode
+      operationId: disableMaintenanceMode
+      responses:
+        '200':
+          description: Maintenance mode disabled
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MessageResponse'
+
+  # Analytics
+  /analytics/overview:
+    get:
+      tags:
+        - Analytics
+      summary: Platform analytics overview
+      description: Get high-level platform analytics and KPIs
+      operationId: getAnalyticsOverview
+      parameters:
+        - name: period
+          in: query
+          schema:
+            type: string
+            enum: [day, week, month, quarter, year]
+            default: month
+      responses:
+        '200':
+          description: Analytics overview retrieved successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AnalyticsOverviewResponse'
+
+  /analytics/users:
+    get:
+      tags:
+        - Analytics
+      summary: User analytics
+      description: Get detailed user analytics and trends
+      operationId: getUserAnalytics
+      parameters:
+        - name: period
+          in: query
+          schema:
+            type: string
+            enum: [day, week, month, quarter, year]
+            default: month
+        - name: cohort
+          in: query
+          schema:
+            type: string
+            enum: [acquisition, retention, engagement]
+      responses:
+        '200':
+          description: User analytics retrieved successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserAnalyticsResponse'
+
+  /analytics/revenue:
+    get:
+      tags:
+        - Analytics
+      summary: Revenue analytics
+      description: Get revenue and billing analytics
+      operationId: getRevenueAnalytics
+      parameters:
+        - name: period
+          in: query
+          schema:
+            type: string
+            enum: [day, week, month, quarter, year]
+            default: month
+      responses:
+        '200':
+          description: Revenue analytics retrieved successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RevenueAnalyticsResponse'
+
+  # Billing Administration
+  /billing/subscriptions:
+    get:
+      tags:
+        - Billing
+      summary: List all subscriptions
+      description: Get a list of all platform subscriptions
+      operationId: listAllSubscriptions
+      parameters:
+        - name: page
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            default: 1
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 20
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [active, canceled, past_due, unpaid]
+        - name: plan
+          in: query
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Subscriptions retrieved successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SubscriptionListResponse'
+
+  /billing/subscriptions/{subscriptionId}/cancel:
+    post:
+      tags:
+        - Billing
+      summary: Cancel subscription
+      description: Cancel a user's subscription (admin override)
+      operationId: cancelSubscriptionAdmin
+      parameters:
+        - name: subscriptionId
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CancelSubscriptionRequest'
+      responses:
+        '200':
+          description: Subscription canceled successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MessageResponse'
+
+  # Security & Audit
+  /security/audit-logs:
+    get:
+      tags:
+        - Security
+      summary: Get audit logs
+      description: Retrieve security audit logs
+      operationId: getAuditLogs
+      parameters:
+        - name: page
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            default: 1
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 50
+        - name: userId
+          in: query
+          schema:
+            type: string
+        - name: action
+          in: query
+          schema:
+            type: string
+        - name: startDate
+          in: query
+          schema:
+            type: string
+            format: date
+        - name: endDate
+          in: query
+          schema:
+            type: string
+            format: date
+      responses:
+        '200':
+          description: Audit logs retrieved successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuditLogsResponse'
+
+  /security/failed-logins:
+    get:
+      tags:
+        - Security
+      summary: Get failed login attempts
+      description: Retrieve failed login attempts for security monitoring
+      operationId: getFailedLogins
+      parameters:
+        - name: hours
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 168
+            default: 24
+        - name: threshold
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            default: 5
+      responses:
+        '200':
+          description: Failed logins retrieved successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FailedLoginsResponse'
+
+components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  schemas:
+    # User Management Schemas
+    AdminUserDetails:
+      type: object
+      properties:
+        id:
+          type: string
+        email:
+          type: string
+        firstName:
+          type: string
+        lastName:
+          type: string
+        phone:
+          type: string
+        avatar:
+          type: string
+        role:
+          type: string
+          enum: [user, admin, developer]
+        status:
+          type: string
+          enum: [active, inactive, suspended, pending]
+        emailVerified:
+          type: boolean
+        phoneVerified:
+          type: boolean
+        twoFactorEnabled:
+          type: boolean
+        lastLogin:
+          type: string
+          format: date-time
+        loginCount:
+          type: integer
+        subscription:
+          $ref: '#/components/schemas/UserSubscription'
+        usage:
+          $ref: '#/components/schemas/UserUsage'
+        projects:
+          type: array
+          items:
+            $ref: '#/components/schemas/UserProject'
+        flags:
+          type: array
+          items:
+            type: string
+        metadata:
+          type: object
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+
+    UserSubscription:
+      type: object
+      properties:
+        id:
+          type: string
+        status:
+          type: string
+        plan:
+          type: string
+        price:
+          type: number
+        currency:
+          type: string
+        currentPeriodStart:
+          type: string
+          format: date-time
+        currentPeriodEnd:
+          type: string
+          format: date-time
+
+    UserUsage:
+      type: object
+      properties:
+        apiCalls:
+          type: integer
+        aiTokens:
+          type: integer
+        storage:
+          type: integer
+        projects:
+          type: integer
+        monthlySpend:
+          type: number
+
+    UserProject:
+      type: object
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        role:
+          type: string
+        status:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+
+    UpdateUserRequest:
+      type: object
+      properties:
+        firstName:
+          type: string
+        lastName:
+          type: string
+        email:
+          type: string
+          format: email
+        phone:
+          type: string
+        role:
+          type: string
+          enum: [user, admin, developer]
+        status:
+          type: string
+          enum: [active, inactive, suspended]
+        flags:
+          type: array
+          items:
+            type: string
+        metadata:
+          type: object
+
+    SuspendUserRequest:
+      type: object
+      required:
+        - reason
+      properties:
+        reason:
+          type: string
+          description: Reason for suspension
+        duration:
+          type: integer
+          description: Suspension duration in days (0 for indefinite)
+        notifyUser:
+          type: boolean
+          default: true
+
+    ImpersonateRequest:
+      type: object
+      required:
+        - reason
+      properties:
+        reason:
+          type: string
+          description: Reason for impersonation
+        duration:
+          type: integer
+          description: Impersonation duration in minutes
+          default: 60
+          minimum: 5
+          maximum: 480
+
+    ImpersonateResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+        data:
+          type: object
+          properties:
+            impersonationToken:
+              type: string
+            expiresAt:
+              type: string
+              format: date-time
+            targetUser:
+              type: object
+              properties:
+                id:
+                  type: string
+                email:
+                  type: string
+                name:
+                  type: string
+
+    # Project Management Schemas
+    AdminProjectDetails:
+      type: object
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        description:
+          type: string
+        status:
+          type: string
+        visibility:
+          type: string
+        owner:
+          $ref: '#/components/schemas/ProjectOwner'
+        members:
+          type: array
+          items:
+            $ref: '#/components/schemas/ProjectMember'
+        usage:
+          $ref: '#/components/schemas/ProjectUsage'
+        settings:
+          type: object
+        flags:
+          type: array
+          items:
+            type: string
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+
+    ProjectOwner:
+      type: object
+      properties:
+        id:
+          type: string
+        email:
+          type: string
+        name:
+          type: string
+        status:
+          type: string
+
+    ProjectMember:
+      type: object
+      properties:
+        user:
+          $ref: '#/components/schemas/ProjectOwner'
+        role:
+          type: string
+        joinedAt:
+          type: string
+          format: date-time
+
+    ProjectUsage:
+      type: object
+      properties:
+        apiCalls:
+          type: integer
+        aiTokens:
+          type: integer
+        storage:
+          type: integer
+        lastActivity:
+          type: string
+          format: date-time
+
+    # System Management Schemas
+    SystemHealth:
+      type: object
+      properties:
+        status:
+          type: string
+          enum: [healthy, degraded, unhealthy]
+        services:
+          type: array
+          items:
+            $ref: '#/components/schemas/ServiceHealth'
+        database:
+          $ref: '#/components/schemas/DatabaseHealth'
+        cache:
+          $ref: '#/components/schemas/CacheHealth'
+        storage:
+          $ref: '#/components/schemas/StorageHealth'
+        lastUpdated:
+          type: string
+          format: date-time
+
+    ServiceHealth:
+      type: object
+      properties:
+        name:
+          type: string
+        status:
+          type: string
+          enum: [healthy, degraded, unhealthy]
+        responseTime:
+          type: number
+        errorRate:
+          type: number
+        uptime:
+          type: number
+
+    DatabaseHealth:
+      type: object
+      properties:
+        status:
+          type: string
+        connections:
+          type: integer
+        responseTime:
+          type: number
+        diskUsage:
+          type: number
+
+    CacheHealth:
+      type: object
+      properties:
+        status:
+          type: string
+        hitRate:
+          type: number
+        memoryUsage:
+          type: number
+
+    StorageHealth:
+      type: object
+      properties:
+        status:
+          type: string
+        diskUsage:
+          type: number
+        freeSpace:
+          type: number
+
+    SystemMetrics:
+      type: object
+      properties:
+        period:
+          type: string
+        overview:
+          type: object
+          properties:
+            totalRequests:
+              type: integer
+            averageResponseTime:
+              type: number
+            errorRate:
+              type: number
+            activeUsers:
+              type: integer
+        services:
+          type: array
+          items:
+            $ref: '#/components/schemas/ServiceMetrics'
+        resources:
+          $ref: '#/components/schemas/ResourceMetrics'
+
+    ServiceMetrics:
+      type: object
+      properties:
+        name:
+          type: string
+        requests:
+          type: integer
+        responseTime:
+          type: number
+        errorRate:
+          type: number
+        throughput:
+          type: number
+
+    ResourceMetrics:
+      type: object
+      properties:
+        cpu:
+          type: number
+        memory:
+          type: number
+        disk:
+          type: number
+        network:
+          type: number
+
+    SystemConfig:
+      type: object
+      properties:
+        features:
+          type: object
+          properties:
+            registrationEnabled:
+              type: boolean
+            maintenanceMode:
+              type: boolean
+            rateLimitingEnabled:
+              type: boolean
+        limits:
+          type: object
+          properties:
+            maxProjectsPerUser:
+              type: integer
+            maxTeamMembersPerProject:
+              type: integer
+            apiRateLimit:
+              type: integer
+        integrations:
+          type: object
+          properties:
+            emailProvider:
+              type: string
+            smsProvider:
+              type: string
+            paymentProvider:
+              type: string
+        security:
+          type: object
+          properties:
+            sessionTimeout:
+              type: integer
+            maxLoginAttempts:
+              type: integer
+            passwordPolicy:
+              type: object
+
+    UpdateSystemConfigRequest:
+      type: object
+      properties:
+        features:
+          type: object
+        limits:
+          type: object
+        integrations:
+          type: object
+        security:
+          type: object
+
+    MaintenanceModeRequest:
+      type: object
+      required:
+        - message
+      properties:
+        message:
+          type: string
+          description: Maintenance message to display
+        estimatedDuration:
+          type: integer
+          description: Estimated duration in minutes
+        allowedUsers:
+          type: array
+          items:
+            type: string
+          description: User IDs allowed during maintenance
+
+    # Analytics Schemas
+    AnalyticsOverview:
+      type: object
+      properties:
+        period:
+          type: string
+        summary:
+          type: object
+          properties:
+            totalUsers:
+              type: integer
+            activeUsers:
+              type: integer
+            newUsers:
+              type: integer
+            totalProjects:
+              type: integer
+            totalRevenue:
+              type: number
+            apiCalls:
+              type: integer
+        growth:
+          type: object
+          properties:
+            users:
+              $ref: '#/components/schemas/GrowthMetric'
+            revenue:
+              $ref: '#/components/schemas/GrowthMetric'
+            projects:
+              $ref: '#/components/schemas/GrowthMetric'
+
+    GrowthMetric:
+      type: object
+      properties:
+        current:
+          type: number
+        previous:
+          type: number
+        change:
+          type: number
+        percentage:
+          type: number
+
+    UserAnalytics:
+      type: object
+      properties:
+        period:
+          type: string
+        acquisition:
+          type: object
+          properties:
+            newUsers:
+              type: integer
+            channels:
+              type: array
+              items:
+                type: object
+                properties:
+                  channel:
+                    type: string
+                  users:
+                    type: integer
+        retention:
+          type: object
+          properties:
+            day1:
+              type: number
+            day7:
+              type: number
+            day30:
+              type: number
+        engagement:
+          type: object
+          properties:
+            dailyActiveUsers:
+              type: integer
+            weeklyActiveUsers:
+              type: integer
+            monthlyActiveUsers:
+              type: integer
+            averageSessionDuration:
+              type: number
+
+    RevenueAnalytics:
+      type: object
+      properties:
+        period:
+          type: string
+        summary:
+          type: object
+          properties:
+            totalRevenue:
+              type: number
+            monthlyRecurringRevenue:
+              type: number
+            averageRevenuePerUser:
+              type: number
+            churnRate:
+              type: number
+        breakdown:
+          type: object
+          properties:
+            byPlan:
+              type: array
+              items:
+                type: object
+                properties:
+                  plan:
+                    type: string
+                  revenue:
+                    type: number
+                  subscribers:
+                    type: integer
+
+    # Security Schemas
+    AuditLog:
+      type: object
+      properties:
+        id:
+          type: string
+        userId:
+          type: string
+        userEmail:
+          type: string
+        action:
+          type: string
+        resource:
+          type: string
+        resourceId:
+          type: string
+        details:
+          type: object
+        ipAddress:
+          type: string
+        userAgent:
+          type: string
+        timestamp:
+          type: string
+          format: date-time
+
+    FailedLogin:
+      type: object
+      properties:
+        email:
+          type: string
+        ipAddress:
+          type: string
+        attemptCount:
+          type: integer
+        lastAttempt:
+          type: string
+          format: date-time
+        blocked:
+          type: boolean
+
+    # Response Schemas
+    UserListResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+        data:
+          type: object
+          properties:
+            users:
+              type: array
+              items:
+                $ref: '#/components/schemas/AdminUserDetails'
+            pagination:
+              $ref: '#/components/schemas/PaginationInfo'
+
+    AdminProjectListResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+        data:
+          type: object
+          properties:
+            projects:
+              type: array
+              items:
+                $ref: '#/components/schemas/AdminProjectDetails'
+            pagination:
+              $ref: '#/components/schemas/PaginationInfo'
+
+    SystemHealthResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+        data:
+          $ref: '#/components/schemas/SystemHealth'
+
+    SystemMetricsResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+        data:
+          $ref: '#/components/schemas/SystemMetrics'
+
+    SystemConfigResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+        data:
+          $ref: '#/components/schemas/SystemConfig'
+
+    AnalyticsOverviewResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+        data:
+          $ref: '#/components/schemas/AnalyticsOverview'
+
+    UserAnalyticsResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+        data:
+          $ref: '#/components/schemas/UserAnalytics'
+
+    RevenueAnalyticsResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+        data:
+          $ref: '#/components/schemas/RevenueAnalytics'
+
+    SubscriptionListResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+        data:
+          type: object
+          properties:
+            subscriptions:
+              type: array
+              items:
+                $ref: '#/components/schemas/UserSubscription'
+            pagination:
+              $ref: '#/components/schemas/PaginationInfo'
+
+    AuditLogsResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+        data:
+          type: object
+          properties:
+            logs:
+              type: array
+              items:
+                $ref: '#/components/schemas/AuditLog'
+            pagination:
+              $ref: '#/components/schemas/PaginationInfo'
+
+    FailedLoginsResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+        data:
+          type: object
+          properties:
+            failedLogins:
+              type: array
+              items:
+                $ref: '#/components/schemas/FailedLogin'
+            summary:
+              type: object
+              properties:
+                totalAttempts:
+                  type: integer
+                uniqueIPs:
+                  type: integer
+                blockedIPs:
+                  type: integer
+
+    MessageResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+        message:
+          type: string
+
+    PaginationInfo:
+      type: object
+      properties:
+        page:
+          type: integer
+        limit:
+          type: integer
+        total:
+          type: integer
+        totalPages:
+          type: integer
+        hasNext:
+          type: boolean
+        hasPrev:
+          type: boolean
+
+    CancelSubscriptionRequest:
+      type: object
+      required:
+        - reason
+      properties:
+        reason:
+          type: string
+        immediate:
+          type: boolean
+          default: false
+        refund:
+          type: boolean
+          default: false
+        notifyUser:
+          type: boolean
+          default: true
+
+  responses:
+    BadRequest:
+      description: Bad request
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              success:
+                type: boolean
+                default: false
+              error:
+                type: string
+
+    Unauthorized:
+      description: Unauthorized - Admin access required
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              success:
+                type: boolean
+                default: false
+              error:
+                type: string
+
+    Forbidden:
+      description: Forbidden - Insufficient admin privileges
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              success:
+                type: boolean
+                default: false
+              error:
+                type: string
+
+    NotFound:
+      description: Resource not found
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              success:
+                type: boolean
+                default: false
+              error:
+                type: string
+
+    ServerError:
+      description: Internal server error
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              success:
+                type: boolean
+                default: false
+              error:
+                type: string

@@ -1,0 +1,422 @@
+# Jaeger Distributed Tracing Configuration
+# Provides comprehensive request tracing across microservices
+
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: jaeger-config
+  namespace: zoptal-production
+  labels:
+    app.kubernetes.io/name: jaeger
+    app.kubernetes.io/component: config
+data:
+  jaeger.yaml: |
+    # Jaeger configuration
+    collector:
+      zipkin:
+        host-port: :9411
+    
+    storage:
+      type: elasticsearch
+      options:
+        es:
+          server-urls: http://elasticsearch:9200
+          index-prefix: jaeger
+          username: elastic
+          password: changeme
+    
+    query:
+      base-path: /
+    
+    agent:
+      jaeger:
+        thrift-compact-port: 6831
+        thrift-binary-port: 6832
+        thrift-http-port: 14268
+      zipkin:
+        thrift-port: 5775
+
+---
+# Elasticsearch for Jaeger Storage
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: elasticsearch
+  namespace: zoptal-production
+  labels:
+    app.kubernetes.io/name: elasticsearch
+    app.kubernetes.io/component: storage
+spec:
+  serviceName: elasticsearch
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: elasticsearch
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: elasticsearch
+        app.kubernetes.io/component: storage
+    spec:
+      containers:
+      - name: elasticsearch
+        image: docker.elastic.co/elasticsearch/elasticsearch:7.17.0
+        ports:
+        - containerPort: 9200
+          name: http
+        - containerPort: 9300
+          name: transport
+        env:
+        - name: discovery.type
+          value: single-node
+        - name: ES_JAVA_OPTS
+          value: "-Xms512m -Xmx512m"
+        - name: xpack.security.enabled
+          value: "false"
+        volumeMounts:
+        - name: storage
+          mountPath: /usr/share/elasticsearch/data
+        resources:
+          requests:
+            memory: 1Gi
+            cpu: 500m
+          limits:
+            memory: 2Gi
+            cpu: 1000m
+  volumeClaimTemplates:
+  - metadata:
+      name: storage
+    spec:
+      accessModes: ["ReadWriteOnce"]
+      storageClassName: fast-ssd
+      resources:
+        requests:
+          storage: 10Gi
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: elasticsearch
+  namespace: zoptal-production
+  labels:
+    app.kubernetes.io/name: elasticsearch
+    app.kubernetes.io/component: storage
+spec:
+  ports:
+  - port: 9200
+    name: http
+  - port: 9300
+    name: transport
+  selector:
+    app.kubernetes.io/name: elasticsearch
+
+---
+# Jaeger Collector
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: jaeger-collector
+  namespace: zoptal-production
+  labels:
+    app.kubernetes.io/name: jaeger-collector
+    app.kubernetes.io/component: collector
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: jaeger-collector
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: jaeger-collector
+        app.kubernetes.io/component: collector
+    spec:
+      containers:
+      - name: jaeger-collector
+        image: jaegertracing/jaeger-collector:1.40.0
+        ports:
+        - containerPort: 14269
+          name: admin-http
+        - containerPort: 14268
+          name: thrift-http
+        - containerPort: 14250
+          name: grpc
+        - containerPort: 9411
+          name: zipkin
+        env:
+        - name: SPAN_STORAGE_TYPE
+          value: elasticsearch
+        - name: ES_SERVER_URLS
+          value: http://elasticsearch:9200
+        - name: ES_USERNAME
+          value: elastic
+        - name: ES_PASSWORD
+          value: changeme
+        - name: COLLECTOR_ZIPKIN_HOST_PORT
+          value: :9411
+        resources:
+          requests:
+            memory: 256Mi
+            cpu: 200m
+          limits:
+            memory: 512Mi
+            cpu: 500m
+        livenessProbe:
+          httpGet:
+            path: /
+            port: 14269
+        readinessProbe:
+          httpGet:
+            path: /
+            port: 14269
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: jaeger-collector
+  namespace: zoptal-production
+  labels:
+    app.kubernetes.io/name: jaeger-collector
+    app.kubernetes.io/component: collector
+spec:
+  ports:
+  - port: 14269
+    name: admin-http
+  - port: 14268
+    name: thrift-http
+  - port: 14250
+    name: grpc
+  - port: 9411
+    name: zipkin
+  selector:
+    app.kubernetes.io/name: jaeger-collector
+
+---
+# Jaeger Query (UI)
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: jaeger-query
+  namespace: zoptal-production
+  labels:
+    app.kubernetes.io/name: jaeger-query
+    app.kubernetes.io/component: query
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: jaeger-query
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: jaeger-query
+        app.kubernetes.io/component: query
+    spec:
+      containers:
+      - name: jaeger-query
+        image: jaegertracing/jaeger-query:1.40.0
+        ports:
+        - containerPort: 16686
+          name: query-http
+        - containerPort: 16687
+          name: admin-http
+        env:
+        - name: SPAN_STORAGE_TYPE
+          value: elasticsearch
+        - name: ES_SERVER_URLS
+          value: http://elasticsearch:9200
+        - name: ES_USERNAME
+          value: elastic
+        - name: ES_PASSWORD
+          value: changeme
+        - name: QUERY_BASE_PATH
+          value: /jaeger
+        resources:
+          requests:
+            memory: 128Mi
+            cpu: 100m
+          limits:
+            memory: 256Mi
+            cpu: 200m
+        livenessProbe:
+          httpGet:
+            path: /
+            port: 16687
+        readinessProbe:
+          httpGet:
+            path: /
+            port: 16687
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: jaeger-query
+  namespace: zoptal-production
+  labels:
+    app.kubernetes.io/name: jaeger-query
+    app.kubernetes.io/component: query
+spec:
+  ports:
+  - port: 16686
+    name: query-http
+  - port: 16687
+    name: admin-http
+  selector:
+    app.kubernetes.io/name: jaeger-query
+
+---
+# Jaeger Agent (DaemonSet)
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: jaeger-agent
+  namespace: zoptal-production
+  labels:
+    app.kubernetes.io/name: jaeger-agent
+    app.kubernetes.io/component: agent
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: jaeger-agent
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: jaeger-agent
+        app.kubernetes.io/component: agent
+    spec:
+      containers:
+      - name: jaeger-agent
+        image: jaegertracing/jaeger-agent:1.40.0
+        ports:
+        - containerPort: 5775
+          name: zk-compact-trft
+          protocol: UDP
+        - containerPort: 6831
+          name: jg-compact-trft
+          protocol: UDP
+        - containerPort: 6832
+          name: jg-binary-trft
+          protocol: UDP
+        - containerPort: 5778
+          name: config-rest
+        - containerPort: 14271
+          name: admin-http
+        env:
+        - name: REPORTER_GRPC_HOST_PORT
+          value: jaeger-collector:14250
+        resources:
+          requests:
+            memory: 64Mi
+            cpu: 50m
+          limits:
+            memory: 128Mi
+            cpu: 100m
+        livenessProbe:
+          httpGet:
+            path: /
+            port: 14271
+        readinessProbe:
+          httpGet:
+            path: /
+            port: 14271
+      hostNetwork: true
+      dnsPolicy: ClusterFirstWithHostNet
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: jaeger-agent
+  namespace: zoptal-production
+  labels:
+    app.kubernetes.io/name: jaeger-agent
+    app.kubernetes.io/component: agent
+spec:
+  ports:
+  - port: 5775
+    name: zk-compact-trft
+    protocol: UDP
+  - port: 6831
+    name: jg-compact-trft
+    protocol: UDP
+  - port: 6832
+    name: jg-binary-trft
+    protocol: UDP
+  - port: 5778
+    name: config-rest
+  - port: 14271
+    name: admin-http
+  clusterIP: None
+  selector:
+    app.kubernetes.io/name: jaeger-agent
+
+---
+# Ingress for Jaeger UI
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: jaeger-ingress
+  namespace: zoptal-production
+  labels:
+    app.kubernetes.io/name: jaeger-ingress
+    app.kubernetes.io/component: ingress
+  annotations:
+    kubernetes.io/ingress.class: nginx
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/auth-type: basic
+    nginx.ingress.kubernetes.io/auth-secret: jaeger-auth
+    nginx.ingress.kubernetes.io/auth-realm: 'Authentication Required - Jaeger'
+spec:
+  tls:
+  - hosts:
+    - jaeger.zoptal.com
+    secretName: jaeger-tls
+  rules:
+  - host: jaeger.zoptal.com
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: jaeger-query
+            port:
+              number: 16686
+
+---
+# Basic auth secret for Jaeger UI
+apiVersion: v1
+kind: Secret
+metadata:
+  name: jaeger-auth
+  namespace: zoptal-production
+  labels:
+    app.kubernetes.io/name: jaeger-auth
+    app.kubernetes.io/component: security
+type: Opaque
+data:
+  auth: YWRtaW46JGFwcjEkSDZ1c2gyczgkdGFuUEt6VE1QUjkzRXJUbXFiSVFkMQ==  # admin:admin (change in production)
+
+---
+# ServiceMonitor for Jaeger metrics
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: jaeger-metrics
+  namespace: zoptal-production
+  labels:
+    app.kubernetes.io/name: jaeger-monitoring
+    app.kubernetes.io/component: service-monitor
+    release: prometheus
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/component: collector
+  endpoints:
+  - port: admin-http
+    path: /metrics
+    interval: 30s

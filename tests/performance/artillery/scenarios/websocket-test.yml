@@ -1,0 +1,363 @@
+# Artillery WebSocket Performance Testing
+# Tests real-time communication performance and WebSocket connection handling
+
+config:
+  target: 'ws://localhost:3001'
+  phases:
+    # Ramp up WebSocket connections
+    - duration: 120  # 2 minutes
+      arrivalRate: 5
+      name: "Ramp up WebSocket connections"
+    
+    # Sustained load
+    - duration: 300  # 5 minutes  
+      arrivalRate: 10
+      name: "Sustained WebSocket load"
+    
+    # Burst connections
+    - duration: 60   # 1 minute
+      arrivalRate: 25
+      name: "WebSocket connection burst"
+    
+    # Cool down
+    - duration: 120  # 2 minutes
+      arrivalRate: 2
+      name: "Cool down period"
+
+  # Performance expectations
+  expect:
+    - statusCode: 101  # WebSocket upgrade
+    - maxErrorRate: 5  # 5% max error rate
+    - p95: 200         # 95% of messages under 200ms
+    - p99: 500         # 99% of messages under 500ms
+
+  # WebSocket configuration
+  ws:
+    # Connection timeout
+    timeout: 30
+    # Subprotocols
+    subprotocols: ['zoptal-realtime-v1']
+
+  # Environment variables
+  variables:
+    authToken: "{{ $processEnvironment.TEST_AUTH_TOKEN }}"
+    userId: "{{ $processEnvironment.TEST_USER_ID }}"
+    projectId: "{{ $processEnvironment.TEST_PROJECT_ID }}"
+
+  # Plugins for enhanced metrics
+  plugins:
+    metrics-by-endpoint:
+      useOnlyRequestNames: true
+    
+  # Custom metrics
+  statsD:
+    host: localhost
+    port: 8125
+    prefix: 'artillery.websocket'
+
+# Test scenarios
+scenarios:
+  # Real-time collaboration testing
+  - name: "Real-time Collaboration"
+    weight: 40
+    engine: ws
+    beforeScenario: "setAuthHeaders"
+    flow:
+      # Connect to collaboration room
+      - connect:
+          url: "/collaboration/{{ projectId }}"
+          headers:
+            Authorization: "Bearer {{ authToken }}"
+      
+      # Join project room
+      - send: 
+          payload: |
+            {
+              "type": "join_room",
+              "data": {
+                "projectId": "{{ projectId }}",
+                "userId": "{{ userId }}",
+                "clientId": "{{ $uuid }}"
+              }
+            }
+      
+      # Wait for join confirmation
+      - think: 1
+      
+      # Send typing indicators
+      - loop:
+          count: 10
+          over: typingEvents
+          flow:
+            - send:
+                payload: |
+                  {
+                    "type": "typing_start",
+                    "data": {
+                      "file": "{{ $randomString() }}.tsx",
+                      "line": {{ $randomInt(1, 100) }},
+                      "userId": "{{ userId }}"
+                    }
+                  }
+            - think: 0.5
+            - send:
+                payload: |
+                  {
+                    "type": "typing_stop", 
+                    "data": {
+                      "userId": "{{ userId }}"
+                    }
+                  }
+            - think: 2
+      
+      # Send code changes
+      - loop:
+          count: 20
+          flow:
+            - send:
+                payload: |
+                  {
+                    "type": "code_change",
+                    "data": {
+                      "file": "src/components/{{ $randomString() }}.tsx",
+                      "operation": "insert",
+                      "position": {{ $randomInt(1, 1000) }},
+                      "content": "// Performance test change at {{ $timestamp }}",
+                      "userId": "{{ userId }}",
+                      "timestamp": "{{ $timestamp }}"
+                    }
+                  }
+            - think: 1
+      
+      # Send cursor movements
+      - loop:
+          count: 50
+          flow:
+            - send:
+                payload: |
+                  {
+                    "type": "cursor_move",
+                    "data": {
+                      "file": "src/app.tsx",
+                      "line": {{ $randomInt(1, 200) }},
+                      "column": {{ $randomInt(1, 80) }},
+                      "userId": "{{ userId }}"
+                    }
+                  }
+            - think: 0.1
+      
+      # Leave room
+      - send:
+          payload: |
+            {
+              "type": "leave_room",
+              "data": {
+                "projectId": "{{ projectId }}",
+                "userId": "{{ userId }}"
+              }
+            }
+
+  # Chat and messaging testing  
+  - name: "Real-time Chat"
+    weight: 30
+    engine: ws
+    beforeScenario: "setAuthHeaders"
+    flow:
+      # Connect to chat
+      - connect:
+          url: "/chat"
+          headers:
+            Authorization: "Bearer {{ authToken }}"
+      
+      # Join chat room
+      - send:
+          payload: |
+            {
+              "type": "join_chat",
+              "data": {
+                "roomId": "project_{{ projectId }}",
+                "userId": "{{ userId }}"
+              }
+            }
+      - think: 1
+      
+      # Send messages rapidly
+      - loop:
+          count: 30
+          flow:
+            - send:
+                payload: |
+                  {
+                    "type": "chat_message",
+                    "data": {
+                      "message": "Performance test message {{ $randomInt(1, 1000) }} at {{ $timestamp }}",
+                      "userId": "{{ userId }}",
+                      "roomId": "project_{{ projectId }}",
+                      "messageId": "{{ $uuid }}"
+                    }
+                  }
+            - think: 0.5
+      
+      # Send typing indicators
+      - loop:
+          count: 10
+          flow:
+            - send:
+                payload: |
+                  {
+                    "type": "chat_typing_start",
+                    "data": {
+                      "userId": "{{ userId }}",
+                      "roomId": "project_{{ projectId }}"
+                    }
+                  }
+            - think: 2
+            - send:
+                payload: |
+                  {
+                    "type": "chat_typing_stop",
+                    "data": {
+                      "userId": "{{ userId }}",
+                      "roomId": "project_{{ projectId }}"
+                    }
+                  }
+            - think: 1
+
+  # Notification testing
+  - name: "Real-time Notifications"
+    weight: 20
+    engine: ws
+    beforeScenario: "setAuthHeaders" 
+    flow:
+      # Connect to notifications
+      - connect:
+          url: "/notifications"
+          headers:
+            Authorization: "Bearer {{ authToken }}"
+      
+      # Subscribe to user notifications
+      - send:
+          payload: |
+            {
+              "type": "subscribe",
+              "data": {
+                "userId": "{{ userId }}",
+                "channels": ["system", "collaboration", "billing", "ai"]
+              }
+            }
+      - think: 2
+      
+      # Simulate receiving various notifications
+      - loop:
+          count: 15
+          flow:
+            # Request notification (simulates system generating notification)
+            - send:
+                payload: |
+                  {
+                    "type": "trigger_notification",
+                    "data": {
+                      "type": "system",
+                      "title": "Performance Test Notification",
+                      "message": "Test notification {{ $randomInt(1, 1000) }}",
+                      "userId": "{{ userId }}",
+                      "priority": "{{ $randomString() }}"
+                    }
+                  }
+            - think: 1
+      
+      # Test notification acknowledgments
+      - loop:
+          count: 10
+          flow:
+            - send:
+                payload: |
+                  {
+                    "type": "ack_notification",
+                    "data": {
+                      "notificationId": "{{ $uuid }}",
+                      "userId": "{{ userId }}"
+                    }
+                  }
+            - think: 0.5
+
+  # AI streaming responses
+  - name: "AI Streaming"
+    weight: 10
+    engine: ws
+    beforeScenario: "setAuthHeaders"
+    flow:
+      # Connect to AI streaming
+      - connect:
+          url: "/ai/stream"
+          headers:
+            Authorization: "Bearer {{ authToken }}"
+      
+      # Start AI generation with streaming
+      - send:
+          payload: |
+            {
+              "type": "start_generation",
+              "data": {
+                "prompt": "Create a comprehensive React component with TypeScript, including props interface, error handling, accessibility features, and unit tests",
+                "context": {
+                  "projectId": "{{ projectId }}",
+                  "language": "typescript",
+                  "framework": "react"
+                },
+                "model": "gpt-4",
+                "stream": true,
+                "requestId": "{{ $uuid }}"
+              }
+            }
+      
+      # Wait for streaming completion (AI responses take time)
+      - think: 30
+      
+      # Send follow-up request
+      - send:
+          payload: |
+            {
+              "type": "start_generation", 
+              "data": {
+                "prompt": "Now add comprehensive error boundaries and performance optimizations to the component",
+                "context": {
+                  "previousRequest": true,
+                  "projectId": "{{ projectId }}"
+                },
+                "stream": true,
+                "requestId": "{{ $uuid }}"
+              }
+            }
+      
+      # Wait for completion
+      - think: 25
+
+# Custom functions
+functions:
+  setAuthHeaders:
+    - log: "Setting up WebSocket authentication"
+    - set:
+        authToken: "{{ $processEnvironment.TEST_AUTH_TOKEN || 'test-token' }}"
+        userId: "{{ $processEnvironment.TEST_USER_ID || 'test-user' }}"
+        projectId: "{{ $processEnvironment.TEST_PROJECT_ID || 'test-project' }}"
+
+# Data for loops
+data:
+  typingEvents:
+    - event: "start"
+    - event: "continue" 
+    - event: "stop"
+
+# After test hooks
+after:
+  flow:
+    - log: "WebSocket performance test completed"
+    - log: "Check Artillery HTML report for detailed metrics"
+
+# Reporting configuration
+output:
+  - type: json
+    path: "./results/artillery-websocket-results.json"
+  - type: html  
+    path: "./results/artillery-websocket-report.html"

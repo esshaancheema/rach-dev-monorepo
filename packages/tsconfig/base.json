@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json.schemastore.org/tsconfig",
+  "display": "Base TypeScript configuration for Zoptal",
+  "compilerOptions": {
+    "strict": true,
+    "useUnknownInCatchVariables": true,
+    "allowJs": true,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true,
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "verbatimModuleSyntax": true,
+    "allowImportingTsExtensions": false,
+    "noUncheckedIndexedAccess": true,
+    "declaration": true,
+    "declarationMap": true,
+    "esModuleInterop": true,
+    "target": "ES2022",
+    "lib": ["ES2022"],
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "allowSyntheticDefaultImports": true,
+    "incremental": true,
+    "tsBuildInfoFile": ".tsbuildinfo"
+  },
+  "exclude": ["node_modules", "dist", "build", ".turbo"]
+}

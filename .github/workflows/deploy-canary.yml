@@ -1,0 +1,346 @@
+name: Canary Deployment
+
+on:
+  workflow_dispatch:
+    inputs:
+      service:
+        description: 'Service to deploy'
+        required: true
+        type: choice
+        options:
+          - auth-service
+          - project-service
+          - ai-service
+          - billing-service
+          - notification-service
+          - analytics-service
+      environment:
+        description: 'Target environment'
+        required: true
+        type: choice
+        options:
+          - staging
+          - production
+      canary-percentage:
+        description: 'Percentage of traffic for canary'
+        required: false
+        type: choice
+        default: '10'
+        options:
+          - '5'
+          - '10'
+          - '25'
+          - '50'
+      auto-promote:
+        description: 'Automatically promote canary if healthy'
+        required: false
+        type: boolean
+        default: false
+
+env:
+  AWS_REGION: us-east-1
+  ECR_REGISTRY: ${{ secrets.ECR_REGISTRY }}
+  KUBE_CONFIG_DATA: ${{ secrets.KUBE_CONFIG_DATA }}
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      deployment-id: ${{ steps.prepare.outputs.deployment-id }}
+      image-tag: ${{ steps.prepare.outputs.image-tag }}
+      canary-replicas: ${{ steps.prepare.outputs.canary-replicas }}
+      stable-replicas: ${{ steps.prepare.outputs.stable-replicas }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Prepare canary deployment
+        id: prepare
+        run: |
+          DEPLOYMENT_ID="canary-$(date +%Y%m%d-%H%M%S)-${{ github.sha }}"
+          IMAGE_TAG="${{ github.sha }}"
+          
+          echo "deployment-id=${DEPLOYMENT_ID}" >> $GITHUB_OUTPUT
+          echo "image-tag=${IMAGE_TAG}" >> $GITHUB_OUTPUT
+          
+          # Calculate replica distribution
+          echo "${{ env.KUBE_CONFIG_DATA }}" | base64 -d > kubeconfig
+          export KUBECONFIG=kubeconfig
+          
+          TOTAL_REPLICAS=$(kubectl get deployment ${{ inputs.service }} -n ${{ inputs.environment }} -o jsonpath='{.spec.replicas}' || echo "3")
+          CANARY_PERCENTAGE=${{ inputs.canary-percentage }}
+          
+          CANARY_REPLICAS=$(( (TOTAL_REPLICAS * CANARY_PERCENTAGE) / 100 ))
+          CANARY_REPLICAS=$(( CANARY_REPLICAS > 0 ? CANARY_REPLICAS : 1 ))
+          STABLE_REPLICAS=$(( TOTAL_REPLICAS - CANARY_REPLICAS ))
+          
+          echo "canary-replicas=${CANARY_REPLICAS}" >> $GITHUB_OUTPUT
+          echo "stable-replicas=${STABLE_REPLICAS}" >> $GITHUB_OUTPUT
+          
+          echo "Canary deployment plan:"
+          echo "Total replicas: ${TOTAL_REPLICAS}"
+          echo "Canary replicas: ${CANARY_REPLICAS} (${CANARY_PERCENTAGE}%)"
+          echo "Stable replicas: ${STABLE_REPLICAS}"
+
+  build:
+    runs-on: ubuntu-latest
+    needs: prepare
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./services/${{ inputs.service }}/Dockerfile
+          push: true
+          tags: |
+            ${{ env.ECR_REGISTRY }}/${{ inputs.service }}:${{ needs.prepare.outputs.image-tag }}
+            ${{ env.ECR_REGISTRY }}/${{ inputs.service }}:canary-latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  deploy-canary:
+    runs-on: ubuntu-latest
+    needs: [prepare, build]
+    environment: ${{ inputs.environment }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup kubectl
+        uses: azure/setup-kubectl@v3
+
+      - name: Configure kubeconfig
+        run: |
+          echo "${{ env.KUBE_CONFIG_DATA }}" | base64 -d > kubeconfig
+          export KUBECONFIG=kubeconfig
+
+      - name: Deploy canary version
+        run: |
+          export KUBECONFIG=kubeconfig
+          
+          # Scale down stable deployment
+          kubectl scale deployment ${{ inputs.service }} --replicas=${{ needs.prepare.outputs.stable-replicas }} -n ${{ inputs.environment }}
+          
+          # Create canary deployment
+          cat k8s/services/${{ inputs.service }}.yaml | \
+            sed 's/name: ${{ inputs.service }}/name: ${{ inputs.service }}-canary/' | \
+            sed 's/app: ${{ inputs.service }}/app: ${{ inputs.service }}-canary/' | \
+            sed 's/version: stable/version: canary/' | \
+            sed 's/replicas: [0-9]*/replicas: ${{ needs.prepare.outputs.canary-replicas }}/' | \
+            sed 's/image: .*$/image: ${{ env.ECR_REGISTRY }}\/${{ inputs.service }}:${{ needs.prepare.outputs.image-tag }}/' | \
+            kubectl apply -f - -n ${{ inputs.environment }}
+          
+          # Wait for canary deployment
+          kubectl rollout status deployment/${{ inputs.service }}-canary -n ${{ inputs.environment }} --timeout=600s
+
+      - name: Configure traffic splitting
+        run: |
+          export KUBECONFIG=kubeconfig
+          
+          # Apply Istio VirtualService for traffic splitting
+          cat <<EOF | kubectl apply -f -
+          apiVersion: networking.istio.io/v1beta1
+          kind: VirtualService
+          metadata:
+            name: ${{ inputs.service }}-canary
+            namespace: ${{ inputs.environment }}
+          spec:
+            hosts:
+            - ${{ inputs.service }}
+            http:
+            - match:
+              - headers:
+                  canary:
+                    exact: "true"
+              route:
+              - destination:
+                  host: ${{ inputs.service }}
+                  subset: canary
+            - route:
+              - destination:
+                  host: ${{ inputs.service }}
+                  subset: stable
+                weight: ${{ 100 - inputs.canary-percentage }}
+              - destination:
+                  host: ${{ inputs.service }}
+                  subset: canary
+                weight: ${{ inputs.canary-percentage }}
+          ---
+          apiVersion: networking.istio.io/v1beta1
+          kind: DestinationRule
+          metadata:
+            name: ${{ inputs.service }}-canary
+            namespace: ${{ inputs.environment }}
+          spec:
+            host: ${{ inputs.service }}
+            subsets:
+            - name: stable
+              labels:
+                app: ${{ inputs.service }}
+                version: stable
+            - name: canary
+              labels:
+                app: ${{ inputs.service }}-canary
+                version: canary
+          EOF
+
+  monitor-canary:
+    runs-on: ubuntu-latest
+    needs: [prepare, deploy-canary]
+    steps:
+      - name: Monitor canary deployment
+        run: |
+          echo "Monitoring canary deployment for 10 minutes..."
+          
+          for i in {1..60}; do
+            echo "Monitoring iteration $i/60"
+            
+            # Get metrics from Prometheus
+            CANARY_ERROR_RATE=$(curl -s "http://prometheus:9090/api/v1/query?query=rate(http_requests_total{job=\"${{ inputs.service }}-canary\",code=~\"5..\"}[5m])" | jq -r '.data.result[0].value[1] // "0"')
+            STABLE_ERROR_RATE=$(curl -s "http://prometheus:9090/api/v1/query?query=rate(http_requests_total{job=\"${{ inputs.service }}\",code=~\"5..\"}[5m])" | jq -r '.data.result[0].value[1] // "0"')
+            
+            CANARY_LATENCY=$(curl -s "http://prometheus:9090/api/v1/query?query=histogram_quantile(0.95,rate(http_request_duration_seconds_bucket{job=\"${{ inputs.service }}-canary\"}[5m]))" | jq -r '.data.result[0].value[1] // "0"')
+            STABLE_LATENCY=$(curl -s "http://prometheus:9090/api/v1/query?query=histogram_quantile(0.95,rate(http_request_duration_seconds_bucket{job=\"${{ inputs.service }}\"}[5m]))" | jq -r '.data.result[0].value[1] // "0"')
+            
+            echo "Canary Error Rate: $CANARY_ERROR_RATE"
+            echo "Stable Error Rate: $STABLE_ERROR_RATE"
+            echo "Canary P95 Latency: $CANARY_LATENCY"
+            echo "Stable P95 Latency: $STABLE_LATENCY"
+            
+            # Check if canary is performing worse
+            if (( $(echo "$CANARY_ERROR_RATE > $STABLE_ERROR_RATE * 2" | bc -l) )); then
+              echo "Canary error rate too high, triggering rollback"
+              echo "canary-healthy=false" >> $GITHUB_ENV
+              exit 1
+            fi
+            
+            if (( $(echo "$CANARY_LATENCY > $STABLE_LATENCY * 1.5" | bc -l) )); then
+              echo "Canary latency too high, triggering rollback"
+              echo "canary-healthy=false" >> $GITHUB_ENV
+              exit 1
+            fi
+            
+            sleep 10
+          done
+          
+          echo "canary-healthy=true" >> $GITHUB_ENV
+          echo "Canary monitoring completed successfully"
+
+  promote-or-rollback:
+    runs-on: ubuntu-latest
+    needs: [prepare, monitor-canary]
+    if: always()
+    environment: ${{ inputs.environment }}-approval
+    steps:
+      - name: Setup kubectl
+        uses: azure/setup-kubectl@v3
+
+      - name: Configure kubeconfig
+        run: |
+          echo "${{ env.KUBE_CONFIG_DATA }}" | base64 -d > kubeconfig
+          export KUBECONFIG=kubeconfig
+
+      - name: Promote canary
+        if: needs.monitor-canary.result == 'success' && (inputs.auto-promote || github.event_name == 'workflow_dispatch')
+        run: |
+          export KUBECONFIG=kubeconfig
+          
+          echo "Promoting canary to full deployment"
+          
+          # Update stable deployment with canary image
+          kubectl set image deployment/${{ inputs.service }} \
+            ${{ inputs.service }}=${{ env.ECR_REGISTRY }}/${{ inputs.service }}:${{ needs.prepare.outputs.image-tag }} \
+            -n ${{ inputs.environment }}
+          
+          # Scale stable deployment back to full replicas
+          TOTAL_REPLICAS=$(( ${{ needs.prepare.outputs.canary-replicas }} + ${{ needs.prepare.outputs.stable-replicas }} ))
+          kubectl scale deployment ${{ inputs.service }} --replicas=${TOTAL_REPLICAS} -n ${{ inputs.environment }}
+          
+          # Wait for rollout
+          kubectl rollout status deployment/${{ inputs.service }} -n ${{ inputs.environment }}
+          
+          # Remove canary deployment
+          kubectl delete deployment ${{ inputs.service }}-canary -n ${{ inputs.environment }}
+          kubectl delete virtualservice ${{ inputs.service }}-canary -n ${{ inputs.environment }}
+          kubectl delete destinationrule ${{ inputs.service }}-canary -n ${{ inputs.environment }}
+          
+          echo "Canary promotion completed"
+
+      - name: Rollback canary
+        if: needs.monitor-canary.result != 'success'
+        run: |
+          export KUBECONFIG=kubeconfig
+          
+          echo "Rolling back canary deployment"
+          
+          # Remove canary deployment
+          kubectl delete deployment ${{ inputs.service }}-canary -n ${{ inputs.environment }} --ignore-not-found=true
+          kubectl delete virtualservice ${{ inputs.service }}-canary -n ${{ inputs.environment }} --ignore-not-found=true
+          kubectl delete destinationrule ${{ inputs.service }}-canary -n ${{ inputs.environment }} --ignore-not-found=true
+          
+          # Scale stable deployment back to full replicas
+          TOTAL_REPLICAS=$(( ${{ needs.prepare.outputs.canary-replicas }} + ${{ needs.prepare.outputs.stable-replicas }} ))
+          kubectl scale deployment ${{ inputs.service }} --replicas=${TOTAL_REPLICAS} -n ${{ inputs.environment }}
+          
+          echo "Canary rollback completed"
+
+  notify:
+    runs-on: ubuntu-latest
+    needs: [prepare, promote-or-rollback]
+    if: always()
+    steps:
+      - name: Determine deployment outcome
+        id: outcome
+        run: |
+          if [ "${{ needs.monitor-canary.result }}" == "success" ]; then
+            echo "outcome=promoted" >> $GITHUB_OUTPUT
+            echo "status=success" >> $GITHUB_OUTPUT
+          else
+            echo "outcome=rolled-back" >> $GITHUB_OUTPUT
+            echo "status=failure" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Notify deployment status
+        uses: 8398a7/action-slack@v3
+        with:
+          status: ${{ steps.outcome.outputs.status }}
+          channel: '#deployments'
+          text: |
+            Canary Deployment ${{ steps.outcome.outputs.outcome }}
+            Service: ${{ inputs.service }}
+            Environment: ${{ inputs.environment }}
+            Canary Percentage: ${{ inputs.canary-percentage }}%
+            Image: ${{ needs.prepare.outputs.image-tag }}
+            Deployment ID: ${{ needs.prepare.outputs.deployment-id }}
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+
+  cleanup:
+    runs-on: ubuntu-latest
+    needs: [prepare, promote-or-rollback]
+    if: always()
+    steps:
+      - name: Cleanup canary resources
+        run: |
+          export KUBECONFIG=kubeconfig
+          echo "${{ env.KUBE_CONFIG_DATA }}" | base64 -d > kubeconfig
+          
+          # Ensure all canary resources are cleaned up
+          kubectl delete deployment ${{ inputs.service }}-canary -n ${{ inputs.environment }} --ignore-not-found=true
+          kubectl delete service ${{ inputs.service }}-canary -n ${{ inputs.environment }} --ignore-not-found=true
+          kubectl delete configmap ${{ inputs.service }}-canary-config -n ${{ inputs.environment }} --ignore-not-found=true
+          
+          echo "Canary cleanup completed"

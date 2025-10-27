@@ -1,0 +1,240 @@
+syntax = "proto3";
+
+package zoptal.analytics.v1;
+
+option go_package = "github.com/zoptal/service-mesh/gen/go/analytics/v1";
+
+import "google/protobuf/timestamp.proto";
+import "google/protobuf/empty.proto";
+import "google/protobuf/struct.proto";
+
+// Analytics Service - Internal gRPC API
+service AnalyticsService {
+  // Track event
+  rpc TrackEvent(TrackEventRequest) returns (TrackEventResponse);
+  
+  // Track page view
+  rpc TrackPageView(TrackPageViewRequest) returns (TrackPageViewResponse);
+  
+  // Get analytics data
+  rpc GetAnalytics(GetAnalyticsRequest) returns (GetAnalyticsResponse);
+  
+  // Get real-time analytics
+  rpc GetRealTimeAnalytics(GetRealTimeAnalyticsRequest) returns (GetRealTimeAnalyticsResponse);
+  
+  // Get user analytics
+  rpc GetUserAnalytics(GetUserAnalyticsRequest) returns (GetUserAnalyticsResponse);
+  
+  // Create custom funnel
+  rpc CreateFunnel(CreateFunnelRequest) returns (CreateFunnelResponse);
+  
+  // Get funnel analysis
+  rpc GetFunnelAnalysis(GetFunnelAnalysisRequest) returns (GetFunnelAnalysisResponse);
+  
+  // Health check
+  rpc HealthCheck(google.protobuf.Empty) returns (HealthCheckResponse);
+}
+
+// Event tracking
+message TrackEventRequest {
+  string project_id = 1;
+  string user_id = 2; // Optional: for authenticated users
+  string session_id = 3;
+  string event_type = 4; // click, submit, download, etc.
+  string event_name = 5; // button_click, form_submit, file_download
+  google.protobuf.Struct properties = 6; // Custom event properties
+  EventMetadata metadata = 7;
+  google.protobuf.Timestamp timestamp = 8;
+}
+
+message TrackEventResponse {
+  bool success = 1;
+  string event_id = 2;
+  string error_message = 3;
+}
+
+// Page view tracking
+message TrackPageViewRequest {
+  string project_id = 1;
+  string user_id = 2; // Optional
+  string session_id = 3;
+  string path = 4;
+  string title = 5; // Optional
+  string referrer = 6; // Optional
+  int32 time_on_page = 7; // Seconds spent on page
+  EventMetadata metadata = 8;
+  google.protobuf.Timestamp timestamp = 9;
+}
+
+message TrackPageViewResponse {
+  bool success = 1;
+  string page_view_id = 2;
+  string error_message = 3;
+}
+
+// Analytics data retrieval
+message GetAnalyticsRequest {
+  string project_id = 1;
+  string user_id = 2; // For access control
+  google.protobuf.Timestamp start_date = 3;
+  google.protobuf.Timestamp end_date = 4;
+  repeated string metrics = 5; // page_views, sessions, users, bounce_rate
+  repeated string dimensions = 6; // date, page, source, device
+  repeated AnalyticsFilter filters = 7;
+  string group_by = 8; // day, week, month
+}
+
+message GetAnalyticsResponse {
+  repeated AnalyticsDataPoint data_points = 1;
+  AnalyticsSummary summary = 2;
+  string error_message = 3;
+}
+
+// Real-time analytics
+message GetRealTimeAnalyticsRequest {
+  string project_id = 1;
+  string user_id = 2; // For access control
+  int32 minutes_back = 3; // Default: 30 minutes
+}
+
+message GetRealTimeAnalyticsResponse {
+  int32 active_users = 1;
+  int32 page_views_last_hour = 2;
+  repeated ActivePage active_pages = 3;
+  repeated string top_events = 4;
+  string error_message = 5;
+}
+
+// User analytics
+message GetUserAnalyticsRequest {
+  string project_id = 1;
+  string requesting_user_id = 2; // For access control
+  string target_user_id = 3; // User to analyze
+  google.protobuf.Timestamp start_date = 4;
+  google.protobuf.Timestamp end_date = 5;
+}
+
+message GetUserAnalyticsResponse {
+  UserAnalytics analytics = 1;
+  string error_message = 2;
+}
+
+// Funnel creation
+message CreateFunnelRequest {
+  string project_id = 1;
+  string user_id = 2; // For access control
+  string name = 3;
+  string description = 4;
+  repeated FunnelStep steps = 5;
+}
+
+message CreateFunnelResponse {
+  string funnel_id = 1;
+  string error_message = 2;
+}
+
+// Funnel analysis
+message GetFunnelAnalysisRequest {
+  string project_id = 1;
+  string user_id = 2; // For access control
+  string funnel_id = 3;
+  google.protobuf.Timestamp start_date = 4;
+  google.protobuf.Timestamp end_date = 5;
+}
+
+message GetFunnelAnalysisResponse {
+  FunnelAnalysis analysis = 1;
+  string error_message = 2;
+}
+
+// Data models
+message EventMetadata {
+  string ip_address = 1;
+  string user_agent = 2;
+  string device_type = 3; // desktop, mobile, tablet
+  string browser = 4;
+  string os = 5;
+  string country = 6;
+  string city = 7;
+  string utm_source = 8;
+  string utm_medium = 9;
+  string utm_campaign = 10;
+  int32 screen_width = 11;
+  int32 screen_height = 12;
+}
+
+message AnalyticsFilter {
+  string dimension = 1;
+  string operator = 2; // equals, contains, starts_with, greater_than
+  string value = 3;
+}
+
+message AnalyticsDataPoint {
+  google.protobuf.Timestamp timestamp = 1;
+  google.protobuf.Struct dimensions = 2;
+  google.protobuf.Struct metrics = 3;
+}
+
+message AnalyticsSummary {
+  int32 total_page_views = 1;
+  int32 unique_page_views = 2;
+  int32 total_sessions = 3;
+  int32 unique_users = 4;
+  double bounce_rate = 5;
+  double avg_session_duration = 6;
+  double avg_time_on_page = 7;
+  int32 total_events = 8;
+}
+
+message ActivePage {
+  string path = 1;
+  string title = 2;
+  int32 active_users = 3;
+}
+
+message UserAnalytics {
+  string user_id = 1;
+  int32 total_sessions = 2;
+  int32 total_page_views = 3;
+  double avg_session_duration = 4;
+  google.protobuf.Timestamp first_seen = 5;
+  google.protobuf.Timestamp last_seen = 6;
+  repeated string top_pages = 7;
+  repeated string devices_used = 8;
+  string primary_location = 9;
+}
+
+message FunnelStep {
+  string name = 1;
+  string event_type = 2; // page_view, event
+  string condition = 3; // path equals "/signup" or event equals "button_click"
+}
+
+message FunnelAnalysis {
+  string funnel_id = 1;
+  string name = 2;
+  repeated FunnelStepResult steps = 3;
+  double overall_conversion_rate = 4;
+  int32 total_entries = 5;
+  int32 total_completions = 6;
+}
+
+message FunnelStepResult {
+  FunnelStep step = 1;
+  int32 entries = 2;
+  int32 completions = 3;
+  double conversion_rate = 4;
+  double drop_off_rate = 5;
+}
+
+// Health check
+message HealthCheckResponse {
+  enum Status {
+    UNKNOWN = 0;
+    SERVING = 1;
+    NOT_SERVING = 2;
+    SERVICE_UNKNOWN = 3;
+  }
+  Status status = 1;
+  string message = 2;
+}

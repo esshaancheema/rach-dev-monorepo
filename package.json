@@ -1,0 +1,36 @@
+{
+  "name": "zoptal-monorepo",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Zoptal - AI-Accelerated Development Platform",
+  "workspaces": [
+    "apps/*",
+    "packages/*",
+    "services/*",
+    "libs/*"
+  ],
+  "scripts": {
+    "dev": "turbo run dev",
+    "build": "turbo run build",
+    "test": "turbo run test",
+    "lint": "turbo run lint",
+    "format": "prettier --write \"**/*.{ts,tsx,md,json}\"",
+    "clean": "turbo run clean && rm -rf node_modules",
+    "db:generate": "turbo run db:generate",
+    "db:push": "turbo run db:push",
+    "db:migrate": "turbo run db:migrate",
+    "type-check": "turbo run type-check"
+  },
+  "devDependencies": {
+    "@changesets/cli": "^2.27.1",
+    "eslint": "^8.57.0",
+    "prettier": "^3.2.5",
+    "turbo": "^1.13.0",
+    "typescript": "^5.4.0"
+  },
+  "packageManager": "pnpm@8.15.0",
+  "engines": {
+    "node": ">=18.0.0",
+    "pnpm": ">=8.0.0"
+  }
+}

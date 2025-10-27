@@ -1,0 +1,686 @@
+openapi: 3.0.3
+info:
+  title: Zoptal Notification Service API
+  description: |
+    Comprehensive API for managing notifications including email, SMS, and push notifications.
+    
+    This service handles all notification-related operations for the Zoptal platform,
+    providing a unified interface for different notification channels.
+    
+  version: 1.0.0
+  contact:
+    name: Zoptal Notifications Support
+    email: notifications@zoptal.com
+
+servers:
+  - url: https://api.zoptal.com/notifications
+    description: Production server
+  - url: http://localhost:4005
+    description: Local development server
+
+security:
+  - BearerAuth: []
+
+tags:
+  - name: Email
+    description: Email notification operations
+  - name: SMS
+    description: SMS notification operations
+  - name: Push
+    description: Push notification operations
+  - name: Templates
+    description: Notification template management
+  - name: Preferences
+    description: User notification preferences
+
+paths:
+  /email/send:
+    post:
+      tags:
+        - Email
+      summary: Send email notification
+      description: Send a single email notification
+      operationId: sendEmail
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SendEmailRequest'
+      responses:
+        '200':
+          description: Email sent successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NotificationResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '500':
+          $ref: '#/components/responses/ServerError'
+
+  /email/bulk:
+    post:
+      tags:
+        - Email
+      summary: Send bulk email notifications
+      description: Send multiple email notifications in batch
+      operationId: sendBulkEmail
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BulkEmailRequest'
+      responses:
+        '200':
+          description: Bulk emails queued successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BulkNotificationResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '500':
+          $ref: '#/components/responses/ServerError'
+
+  /sms/send:
+    post:
+      tags:
+        - SMS
+      summary: Send SMS notification
+      description: Send a single SMS notification
+      operationId: sendSMS
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SendSMSRequest'
+      responses:
+        '200':
+          description: SMS sent successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NotificationResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '500':
+          $ref: '#/components/responses/ServerError'
+
+  /push/send:
+    post:
+      tags:
+        - Push
+      summary: Send push notification
+      description: Send a push notification to device(s)
+      operationId: sendPushNotification
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SendPushRequest'
+      responses:
+        '200':
+          description: Push notification sent successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NotificationResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '500':
+          $ref: '#/components/responses/ServerError'
+
+  /templates:
+    get:
+      tags:
+        - Templates
+      summary: List notification templates
+      description: Get list of available notification templates
+      operationId: listTemplates
+      parameters:
+        - name: type
+          in: query
+          description: Filter by template type
+          schema:
+            type: string
+            enum: [email, sms, push]
+        - name: category
+          in: query
+          description: Filter by template category
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Templates retrieved successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TemplateListResponse'
+
+    post:
+      tags:
+        - Templates
+      summary: Create notification template
+      description: Create a new notification template
+      operationId: createTemplate
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateTemplateRequest'
+      responses:
+        '201':
+          description: Template created successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NotificationTemplate'
+
+  /templates/{templateId}:
+    get:
+      tags:
+        - Templates
+      summary: Get template details
+      description: Get detailed information about a specific template
+      operationId: getTemplate
+      parameters:
+        - name: templateId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Template retrieved successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NotificationTemplate'
+
+    put:
+      tags:
+        - Templates
+      summary: Update template
+      description: Update an existing notification template
+      operationId: updateTemplate
+      parameters:
+        - name: templateId
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateTemplateRequest'
+      responses:
+        '200':
+          description: Template updated successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NotificationTemplate'
+
+  /preferences/{userId}:
+    get:
+      tags:
+        - Preferences
+      summary: Get user notification preferences
+      description: Get notification preferences for a specific user
+      operationId: getUserPreferences
+      parameters:
+        - name: userId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Preferences retrieved successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NotificationPreferences'
+
+    put:
+      tags:
+        - Preferences
+      summary: Update user notification preferences
+      description: Update notification preferences for a specific user
+      operationId: updateUserPreferences
+      parameters:
+        - name: userId
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdatePreferencesRequest'
+      responses:
+        '200':
+          description: Preferences updated successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NotificationPreferences'
+
+components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  schemas:
+    SendEmailRequest:
+      type: object
+      required:
+        - to
+        - subject
+        - content
+      properties:
+        to:
+          type: string
+          format: email
+          description: Recipient email address
+        cc:
+          type: array
+          items:
+            type: string
+            format: email
+          description: CC recipients
+        bcc:
+          type: array
+          items:
+            type: string
+            format: email
+          description: BCC recipients
+        subject:
+          type: string
+          description: Email subject
+        content:
+          type: string
+          description: Email content (HTML or plain text)
+        contentType:
+          type: string
+          enum: [text, html]
+          default: html
+        templateId:
+          type: string
+          description: Template ID to use
+        templateData:
+          type: object
+          description: Data to populate template variables
+        priority:
+          type: string
+          enum: [low, normal, high]
+          default: normal
+        attachments:
+          type: array
+          items:
+            $ref: '#/components/schemas/EmailAttachment'
+
+    EmailAttachment:
+      type: object
+      required:
+        - filename
+        - content
+      properties:
+        filename:
+          type: string
+        content:
+          type: string
+          format: base64
+        contentType:
+          type: string
+        size:
+          type: integer
+
+    BulkEmailRequest:
+      type: object
+      required:
+        - emails
+      properties:
+        emails:
+          type: array
+          items:
+            $ref: '#/components/schemas/SendEmailRequest'
+          maxItems: 100
+
+    SendSMSRequest:
+      type: object
+      required:
+        - to
+        - message
+      properties:
+        to:
+          type: string
+          description: Recipient phone number (E.164 format)
+        message:
+          type: string
+          maxLength: 1600
+          description: SMS message content
+        templateId:
+          type: string
+          description: Template ID to use
+        templateData:
+          type: object
+          description: Data to populate template variables
+        priority:
+          type: string
+          enum: [low, normal, high]
+          default: normal
+
+    SendPushRequest:
+      type: object
+      required:
+        - to
+        - title
+        - body
+      properties:
+        to:
+          oneOf:
+            - type: string
+              description: Single device token
+            - type: array
+              items:
+                type: string
+              description: Multiple device tokens
+        title:
+          type: string
+          description: Notification title
+        body:
+          type: string
+          description: Notification body
+        data:
+          type: object
+          description: Custom data payload
+        icon:
+          type: string
+          description: Notification icon URL
+        badge:
+          type: integer
+          description: Badge count (iOS)
+        sound:
+          type: string
+          description: Sound file name
+        clickAction:
+          type: string
+          description: Action when notification is clicked
+        templateId:
+          type: string
+          description: Template ID to use
+        templateData:
+          type: object
+          description: Data to populate template variables
+        priority:
+          type: string
+          enum: [low, normal, high]
+          default: normal
+
+    NotificationTemplate:
+      type: object
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        description:
+          type: string
+        type:
+          type: string
+          enum: [email, sms, push]
+        category:
+          type: string
+        subject:
+          type: string
+          description: Template subject (for email)
+        content:
+          type: string
+          description: Template content with variables
+        variables:
+          type: array
+          items:
+            type: string
+          description: Available template variables
+        isActive:
+          type: boolean
+          default: true
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+
+    CreateTemplateRequest:
+      type: object
+      required:
+        - name
+        - type
+        - content
+      properties:
+        name:
+          type: string
+        description:
+          type: string
+        type:
+          type: string
+          enum: [email, sms, push]
+        category:
+          type: string
+        subject:
+          type: string
+        content:
+          type: string
+        variables:
+          type: array
+          items:
+            type: string
+
+    UpdateTemplateRequest:
+      type: object
+      properties:
+        name:
+          type: string
+        description:
+          type: string
+        subject:
+          type: string
+        content:
+          type: string
+        variables:
+          type: array
+          items:
+            type: string
+        isActive:
+          type: boolean
+
+    NotificationPreferences:
+      type: object
+      properties:
+        userId:
+          type: string
+        email:
+          $ref: '#/components/schemas/EmailPreferences'
+        sms:
+          $ref: '#/components/schemas/SMSPreferences'
+        push:
+          $ref: '#/components/schemas/PushPreferences'
+        timezone:
+          type: string
+          description: User's timezone
+        quietHours:
+          $ref: '#/components/schemas/QuietHours'
+
+    EmailPreferences:
+      type: object
+      properties:
+        enabled:
+          type: boolean
+          default: true
+        marketing:
+          type: boolean
+          default: false
+        security:
+          type: boolean
+          default: true
+        billing:
+          type: boolean
+          default: true
+        projectUpdates:
+          type: boolean
+          default: true
+
+    SMSPreferences:
+      type: object
+      properties:
+        enabled:
+          type: boolean
+          default: false
+        security:
+          type: boolean
+          default: true
+        urgent:
+          type: boolean
+          default: true
+
+    PushPreferences:
+      type: object
+      properties:
+        enabled:
+          type: boolean
+          default: true
+        projectUpdates:
+          type: boolean
+          default: true
+        mentions:
+          type: boolean
+          default: true
+        comments:
+          type: boolean
+          default: true
+
+    QuietHours:
+      type: object
+      properties:
+        enabled:
+          type: boolean
+          default: false
+        start:
+          type: string
+          pattern: '^([0-1]?[0-9]|2[0-3]):[0-5][0-9]$'
+          description: Start time (HH:MM format)
+        end:
+          type: string
+          pattern: '^([0-1]?[0-9]|2[0-3]):[0-5][0-9]$'
+          description: End time (HH:MM format)
+
+    UpdatePreferencesRequest:
+      type: object
+      properties:
+        email:
+          $ref: '#/components/schemas/EmailPreferences'
+        sms:
+          $ref: '#/components/schemas/SMSPreferences'
+        push:
+          $ref: '#/components/schemas/PushPreferences'
+        timezone:
+          type: string
+        quietHours:
+          $ref: '#/components/schemas/QuietHours'
+
+    NotificationResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+        data:
+          type: object
+          properties:
+            notificationId:
+              type: string
+            status:
+              type: string
+              enum: [sent, queued, failed]
+            message:
+              type: string
+
+    BulkNotificationResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+        data:
+          type: object
+          properties:
+            batchId:
+              type: string
+            total:
+              type: integer
+            queued:
+              type: integer
+            failed:
+              type: integer
+            failures:
+              type: array
+              items:
+                type: object
+                properties:
+                  index:
+                    type: integer
+                  error:
+                    type: string
+
+    TemplateListResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+        data:
+          type: object
+          properties:
+            templates:
+              type: array
+              items:
+                $ref: '#/components/schemas/NotificationTemplate'
+            total:
+              type: integer
+
+  responses:
+    BadRequest:
+      description: Bad request
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              success:
+                type: boolean
+                default: false
+              error:
+                type: string
+
+    ServerError:
+      description: Internal server error
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              success:
+                type: boolean
+                default: false
+              error:
+                type: string

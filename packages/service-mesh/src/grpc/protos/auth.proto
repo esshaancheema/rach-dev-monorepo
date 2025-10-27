@@ -1,0 +1,143 @@
+syntax = "proto3";
+
+package zoptal.auth.v1;
+
+option go_package = "github.com/zoptal/service-mesh/gen/go/auth/v1";
+
+import "google/protobuf/timestamp.proto";
+import "google/protobuf/empty.proto";
+
+// Auth Service - Internal gRPC API for service-to-service communication
+service AuthService {
+  // Validate JWT token and return user information
+  rpc ValidateToken(ValidateTokenRequest) returns (ValidateTokenResponse);
+  
+  // Get user by ID (internal use)
+  rpc GetUser(GetUserRequest) returns (GetUserResponse);
+  
+  // Get user permissions for authorization
+  rpc GetUserPermissions(GetUserPermissionsRequest) returns (GetUserPermissionsResponse);
+  
+  // Create service account for inter-service communication
+  rpc CreateServiceAccount(CreateServiceAccountRequest) returns (CreateServiceAccountResponse);
+  
+  // Validate service account token
+  rpc ValidateServiceToken(ValidateServiceTokenRequest) returns (ValidateServiceTokenResponse);
+  
+  // Health check
+  rpc HealthCheck(google.protobuf.Empty) returns (HealthCheckResponse);
+}
+
+// Token validation
+message ValidateTokenRequest {
+  string token = 1;
+}
+
+message ValidateTokenResponse {
+  bool valid = 1;
+  string user_id = 2;
+  string email = 3;
+  string role = 4;
+  repeated string permissions = 5;
+  google.protobuf.Timestamp expires_at = 6;
+  string error_message = 7;
+}
+
+// User retrieval
+message GetUserRequest {
+  string user_id = 1;
+}
+
+message GetUserResponse {
+  User user = 1;
+  string error_message = 2;
+}
+
+message User {
+  string id = 1;
+  string email = 2;
+  string name = 3;
+  string role = 4;
+  bool email_verified = 5;
+  UserProfile profile = 6;
+  UserPreferences preferences = 7;
+  google.protobuf.Timestamp created_at = 8;
+  google.protobuf.Timestamp updated_at = 9;
+}
+
+message UserProfile {
+  string avatar = 1;
+  string bio = 2;
+  string company = 3;
+  string location = 4;
+  string website = 5;
+}
+
+message UserPreferences {
+  string theme = 1;
+  string language = 2;
+  NotificationSettings notifications = 3;
+}
+
+message NotificationSettings {
+  bool email = 1;
+  bool push = 2;
+  bool marketing = 3;
+}
+
+// User permissions
+message GetUserPermissionsRequest {
+  string user_id = 1;
+  string resource = 2; // Optional: filter by resource
+}
+
+message GetUserPermissionsResponse {
+  repeated Permission permissions = 1;
+  string error_message = 2;
+}
+
+message Permission {
+  string resource = 1;
+  string action = 2;
+  repeated string conditions = 3;
+}
+
+// Service account management
+message CreateServiceAccountRequest {
+  string service_name = 1;
+  repeated string permissions = 2;
+  int64 expires_in_days = 3; // 0 for no expiration
+}
+
+message CreateServiceAccountResponse {
+  string service_id = 1;
+  string token = 2;
+  google.protobuf.Timestamp expires_at = 3;
+  string error_message = 4;
+}
+
+message ValidateServiceTokenRequest {
+  string token = 1;
+  string required_permission = 2; // Optional: check specific permission
+}
+
+message ValidateServiceTokenResponse {
+  bool valid = 1;
+  string service_id = 2;
+  string service_name = 3;
+  repeated string permissions = 4;
+  google.protobuf.Timestamp expires_at = 5;
+  string error_message = 6;
+}
+
+// Health check
+message HealthCheckResponse {
+  enum Status {
+    UNKNOWN = 0;
+    SERVING = 1;
+    NOT_SERVING = 2;
+    SERVICE_UNKNOWN = 3;
+  }
+  Status status = 1;
+  string message = 2;
+}

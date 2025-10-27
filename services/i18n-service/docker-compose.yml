@@ -1,0 +1,115 @@
+version: '3.8'
+
+services:
+  i18n-service:
+    build: .
+    container_name: zoptal-i18n-service
+    ports:
+      - "3007:3007"
+    environment:
+      - NODE_ENV=development
+      - PORT=3007
+      - MONGODB_URI=mongodb://mongo:27017/zoptal_i18n
+      - REDIS_URL=redis://redis:6379
+      - JWT_SECRET=your-jwt-secret-key
+      - LOG_LEVEL=info
+      - GOOGLE_TRANSLATE_API_KEY=${GOOGLE_TRANSLATE_API_KEY}
+      - AZURE_TRANSLATOR_KEY=${AZURE_TRANSLATOR_KEY}
+      - AZURE_TRANSLATOR_REGION=${AZURE_TRANSLATOR_REGION}
+      - DEEPL_API_KEY=${DEEPL_API_KEY}
+    depends_on:
+      - mongo
+      - redis
+    volumes:
+      - ./logs:/app/logs
+    networks:
+      - zoptal-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "node", "healthcheck.js"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  mongo:
+    image: mongo:6.0
+    container_name: zoptal-i18n-mongo
+    ports:
+      - "27017:27017"
+    environment:
+      - MONGO_INITDB_ROOT_USERNAME=admin
+      - MONGO_INITDB_ROOT_PASSWORD=password
+      - MONGO_INITDB_DATABASE=zoptal_i18n
+    volumes:
+      - mongo_data:/data/db
+      - ./scripts/mongo-init.js:/docker-entrypoint-initdb.d/mongo-init.js:ro
+    networks:
+      - zoptal-network
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    container_name: zoptal-i18n-redis
+    ports:
+      - "6379:6379"
+    command: redis-server --appendonly yes --requirepass redispassword
+    volumes:
+      - redis_data:/data
+    networks:
+      - zoptal-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "--raw", "incr", "ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: zoptal-i18n-prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/etc/prometheus/console_libraries'
+      - '--web.console.templates=/etc/prometheus/consoles'
+      - '--storage.tsdb.retention.time=200h'
+      - '--web.enable-lifecycle'
+    networks:
+      - zoptal-network
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:latest
+    container_name: zoptal-i18n-grafana
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./monitoring/grafana/dashboards:/etc/grafana/provisioning/dashboards:ro
+      - ./monitoring/grafana/datasources:/etc/grafana/provisioning/datasources:ro
+    networks:
+      - zoptal-network
+    restart: unless-stopped
+
+volumes:
+  mongo_data:
+    driver: local
+  redis_data:
+    driver: local
+  prometheus_data:
+    driver: local
+  grafana_data:
+    driver: local
+
+networks:
+  zoptal-network:
+    driver: bridge
+    name: zoptal-i18n-network

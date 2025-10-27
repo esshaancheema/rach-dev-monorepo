@@ -1,0 +1,26 @@
+# Global owners
+* @your-github-username
+
+# Frontend applications
+/apps/ @frontend-team @your-github-username
+
+# Backend services
+/services/ @backend-team @your-github-username
+
+# Shared packages
+/packages/ @frontend-team @backend-team @your-github-username
+
+# Infrastructure and deployment
+/.github/workflows/ @devops-team @your-github-username
+/k8s/ @devops-team @your-github-username
+/docker/ @devops-team @your-github-username
+
+# Documentation
+/docs/ @docs-team @your-github-username
+README.md @docs-team @your-github-username
+
+# Configuration files
+package.json @your-github-username
+tsconfig.json @your-github-username
+.eslintrc.* @your-github-username
+.prettierrc.* @your-github-username

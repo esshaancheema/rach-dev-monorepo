@@ -1,0 +1,159 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: prometheus
+  namespace: monitoring
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: prometheus
+rules:
+- apiGroups: [""]
+  resources:
+  - nodes
+  - nodes/proxy
+  - nodes/metrics
+  - services
+  - endpoints
+  - pods
+  - ingresses
+  - configmaps
+  verbs: ["get", "list", "watch"]
+- apiGroups: ["extensions", "networking.k8s.io"]
+  resources:
+  - ingresses
+  verbs: ["get", "list", "watch"]
+- apiGroups: ["apps"]
+  resources:
+  - deployments
+  - replicasets
+  - daemonsets
+  - statefulsets
+  verbs: ["get", "list", "watch"]
+- nonResourceURLs: ["/metrics"]
+  verbs: ["get"]
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: prometheus
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: prometheus
+subjects:
+- kind: ServiceAccount
+  name: prometheus
+  namespace: monitoring
+
+---
+apiVersion: monitoring.coreos.com/v1
+kind: Prometheus
+metadata:
+  name: prometheus
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/name: prometheus
+    app.kubernetes.io/component: prometheus
+spec:
+  serviceAccountName: prometheus
+  serviceMonitorSelector:
+    matchLabels:
+      team: zoptal
+  podMonitorSelector:
+    matchLabels:
+      team: zoptal
+  ruleSelector:
+    matchLabels:
+      team: zoptal
+      prometheus: kube-prometheus
+  resources:
+    requests:
+      memory: 400Mi
+      cpu: 100m
+    limits:
+      memory: 2Gi
+      cpu: 1000m
+  retention: 30d
+  storage:
+    volumeClaimTemplate:
+      spec:
+        storageClassName: gp3
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 50Gi
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 1000
+    fsGroup: 2000
+  containers:
+  - name: prometheus
+    securityContext:
+      allowPrivilegeEscalation: false
+      capabilities:
+        drop:
+        - ALL
+      readOnlyRootFilesystem: true
+  alerting:
+    alertmanagers:
+    - namespace: monitoring
+      name: alertmanager-main
+      port: web
+  externalLabels:
+    cluster: zoptal-k8s
+    environment: production
+  enableAdminAPI: false
+  logLevel: info
+  logFormat: logfmt
+  replicas: 2
+  shards: 1
+  version: v2.45.0
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: prometheus
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/name: prometheus
+    app.kubernetes.io/component: prometheus
+spec:
+  type: ClusterIP
+  ports:
+  - name: web
+    port: 9090
+    targetPort: web
+  selector:
+    app.kubernetes.io/name: prometheus
+    app.kubernetes.io/component: prometheus
+
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: prometheus
+  namespace: monitoring
+  annotations:
+    kubernetes.io/ingress.class: alb
+    alb.ingress.kubernetes.io/scheme: internal
+    alb.ingress.kubernetes.io/target-type: ip
+    alb.ingress.kubernetes.io/healthcheck-path: /-/healthy
+    alb.ingress.kubernetes.io/listen-ports: '[{"HTTP": 80}, {"HTTPS": 443}]'
+    alb.ingress.kubernetes.io/ssl-redirect: '443'
+spec:
+  rules:
+  - host: prometheus.internal.zoptal.com
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: prometheus
+            port:
+              number: 9090

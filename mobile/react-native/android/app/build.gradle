@@ -1,0 +1,253 @@
+apply plugin: "com.android.application"
+apply plugin: "com.facebook.react"
+apply plugin: "com.microsoft.appcenter.reactnative.android"
+
+/**
+ * This is the configuration block to customize your React Native Android app.
+ */
+react {
+    entryFile = "index.js"
+    bundleCommand = "bundle"
+    devBundleCommand = "dev-bundle"
+    bundleConfig = "metro.config.js"
+    bundleAssetName = "index.android.bundle"
+    iconFontNames = [ "MaterialCommunityIcons.ttf" ]
+}
+
+/**
+ * Set this to true to create two separate APKs instead of one:
+ *   - An APK that only works on ARM devices
+ *   - An APK that only works on x86 devices
+ * The advantage is the size of the APK is reduced by about 4MB.
+ * Upload all the APKs to the Play Store and people will download
+ * the correct one based on the CPU architecture of their device.
+ */
+def enableSeparateBuildPerCPUArchitecture = false
+
+/**
+ * Set this to true to Run Proguard on Release builds to minify the Java bytecode.
+ */
+def enableProguardInReleaseBuilds = false
+
+/**
+ * The preferred build flavor of JavaScriptCore (JSC)
+ *
+ * For example, to use the international variant, you can use:
+ * `def jscFlavor = 'org.webkit:android-jsc-intl:+'`
+ *
+ * The international variant includes ICU i18n library and necessary data
+ * allowing to use e.g. `Date.toLocaleString` and `String.localeCompare` that
+ * give correct results when using with locales other than en-US.  Note that
+ * this variant is about 6MiB larger per architecture than default.
+ */
+def jscFlavor = 'org.webkit:android-jsc:+'
+
+android {
+    ndkVersion rootProject.ext.ndkVersion
+    compileSdkVersion rootProject.ext.compileSdkVersion
+
+    namespace "com.zoptal.mobile"
+    defaultConfig {
+        applicationId "com.zoptal.mobile"
+        minSdkVersion rootProject.ext.minSdkVersion
+        targetSdkVersion rootProject.ext.targetSdkVersion
+        versionCode 1
+        versionName "1.0.0"
+        multiDexEnabled true
+        
+        // React Native Config
+        resValue "string", "build_config_package", "com.zoptal.mobile"
+        
+        // CodePush Deployment Keys
+        resValue "string", "CodePushDeploymentKey_Staging", '"YOUR_CODEPUSH_STAGING_KEY"'
+        resValue "string", "CodePushDeploymentKey_Production", '"YOUR_CODEPUSH_PRODUCTION_KEY"'
+    }
+
+    splits {
+        abi {
+            reset()
+            enable enableSeparateBuildPerCPUArchitecture
+            universalApk false
+            include "armeabi-v7a", "x86", "arm64-v8a", "x86_64"
+        }
+    }
+
+    signingConfigs {
+        debug {
+            storeFile file('debug.keystore')
+            storePassword 'android'
+            keyAlias 'androiddebugkey'
+            keyPassword 'android'
+        }
+        release {
+            if (project.hasProperty('ZOPTAL_UPLOAD_STORE_FILE')) {
+                storeFile file(ZOPTAL_UPLOAD_STORE_FILE)
+                storePassword ZOPTAL_UPLOAD_STORE_PASSWORD
+                keyAlias ZOPTAL_UPLOAD_KEY_ALIAS
+                keyPassword ZOPTAL_UPLOAD_KEY_PASSWORD
+            }
+        }
+    }
+
+    buildTypes {
+        debug {
+            signingConfig signingConfigs.debug
+            applicationIdSuffix ".debug"
+            debuggable true
+            minifyEnabled false
+            proguardFiles getDefaultProguardFile("proguard-android.txt"), "proguard-rules.pro"
+            
+            buildConfigField "String", "CODEPUSH_KEY", '"YOUR_CODEPUSH_STAGING_KEY"'
+            buildConfigField "String", "API_BASE_URL", '"https://api-staging.zoptal.com"'
+            buildConfigField "String", "WS_BASE_URL", '"wss://ws-staging.zoptal.com"'
+            buildConfigField "boolean", "ENABLE_FLIPPER", "true"
+        }
+        release {
+            signingConfig signingConfigs.release
+            minifyEnabled enableProguardInReleaseBuilds
+            proguardFiles getDefaultProguardFile("proguard-android.txt"), "proguard-rules.pro"
+            
+            buildConfigField "String", "CODEPUSH_KEY", '"YOUR_CODEPUSH_PRODUCTION_KEY"'
+            buildConfigField "String", "API_BASE_URL", '"https://api.zoptal.com"'
+            buildConfigField "String", "WS_BASE_URL", '"wss://ws.zoptal.com"'
+            buildConfigField "boolean", "ENABLE_FLIPPER", "false"
+        }
+        staging {
+            initWith debug
+            signingConfig signingConfigs.debug
+            applicationIdSuffix ".staging"
+            versionNameSuffix "-staging"
+            
+            buildConfigField "String", "CODEPUSH_KEY", '"YOUR_CODEPUSH_STAGING_KEY"'
+            buildConfigField "String", "API_BASE_URL", '"https://api-staging.zoptal.com"'
+            buildConfigField "String", "WS_BASE_URL", '"wss://ws-staging.zoptal.com"'
+            buildConfigField "boolean", "ENABLE_FLIPPER", "true"
+        }
+    }
+
+    // applicationVariants are e.g. debug, release
+    applicationVariants.all { variant ->
+        variant.outputs.each { output ->
+            def versionCodes = ["armeabi-v7a": 1, "x86": 2, "arm64-v8a": 3, "x86_64": 4]
+            def abi = output.getFilter(OutputFile.ABI)
+            if (abi != null) {
+                output.versionCodeOverride =
+                        defaultConfig.versionCode * 1000 + versionCodes.get(abi)
+            }
+        }
+    }
+
+    packagingOptions {
+        pickFirst "lib/x86/libc++_shared.so"
+        pickFirst "lib/x86_64/libc++_shared.so"
+        pickFirst "lib/arm64-v8a/libc++_shared.so"
+        pickFirst "lib/armeabi-v7a/libc++_shared.so"
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_11
+        targetCompatibility JavaVersion.VERSION_11
+    }
+
+    kotlinOptions {
+        jvmTarget = '11'
+    }
+
+    dataBinding {
+        enabled = true
+    }
+
+    buildFeatures {
+        viewBinding true
+    }
+
+    lintOptions {
+        abortOnError false
+        checkReleaseBuilds false
+    }
+}
+
+dependencies {
+    implementation fileTree(dir: "libs", include: ["*.jar"])
+    
+    // React Native
+    implementation "com.facebook.react:react-android"
+    implementation "com.facebook.react:flipper-integration"
+    
+    debugImplementation("com.facebook.flipper:flipper:${FLIPPER_VERSION}")
+    debugImplementation("com.facebook.flipper:flipper-network-plugin:${FLIPPER_VERSION}") {
+        exclude group:"com.squareup.okhttp3", module:"okhttp"
+    }
+    debugImplementation("com.facebook.flipper:flipper-fresco-plugin:${FLIPPER_VERSION}")
+    
+    if (hermesEnabled.toBoolean()) {
+        implementation("com.facebook.react:hermes-android")
+    } else {
+        implementation jscFlavor
+    }
+
+    // AndroidX
+    implementation 'androidx.appcompat:appcompat:1.6.1'
+    implementation 'androidx.core:core-ktx:1.10.1'
+    implementation 'androidx.fragment:fragment-ktx:1.6.1'
+    implementation 'androidx.lifecycle:lifecycle-runtime-ktx:2.6.1'
+    implementation 'androidx.constraintlayout:constraintlayout:2.1.4'
+    implementation 'androidx.multidex:multidex:2.0.1'
+    
+    // Material Design
+    implementation 'com.google.android.material:material:1.9.0'
+    
+    // Biometric Authentication
+    implementation 'androidx.biometric:biometric:1.1.0'
+    
+    // Camera and Gallery
+    implementation 'androidx.camera:camera-core:1.2.3'
+    implementation 'androidx.camera:camera-camera2:1.2.3'
+    implementation 'androidx.camera:camera-lifecycle:1.2.3'
+    implementation 'androidx.camera:camera-view:1.2.3'
+    
+    // Network Security
+    implementation 'androidx.security:security-crypto:1.1.0-alpha06'
+    
+    // Splash Screen
+    implementation 'androidx.core:core-splashscreen:1.0.1'
+    
+    // CodePush
+    implementation project(':react-native-code-push')
+    
+    // Other React Native modules
+    implementation project(':react-native-vector-icons')
+    implementation project(':react-native-keychain')
+    implementation project(':react-native-device-info')
+    implementation project(':react-native-permissions')
+    implementation project(':react-native-fast-image')
+    implementation project(':react-native-linear-gradient')
+    implementation project(':react-native-svg')
+    implementation project(':react-native-reanimated')
+    implementation project(':react-native-gesture-handler')
+    implementation project(':react-native-screens')
+    implementation project(':react-native-safe-area-context')
+    implementation project(':react-native-webview')
+    
+    // Testing
+    testImplementation 'junit:junit:4.13.2'
+    testImplementation 'org.mockito:mockito-core:5.4.0'
+    androidTestImplementation 'androidx.test.ext:junit:1.1.5'
+    androidTestImplementation 'androidx.test.espresso:espresso-core:3.5.1'
+    androidTestImplementation 'androidx.test:runner:1.5.2'
+    androidTestImplementation 'androidx.test:rules:1.5.0'
+}
+
+// Run this once to be able to run the application with BUCK
+task copyDownloadableDepsToLibs(type: Copy) {
+    from configurations.implementation
+    into 'libs'
+}
+
+apply from: file("../../node_modules/@react-native-community/cli-platform-android/native_modules.gradle"); applyNativeModulesAppBuildGradle(project)
+
+// CodePush
+apply from: "../../node_modules/react-native-code-push/android/codepush.gradle"
+
+// React Native Config
+apply from: project(':react-native-config').projectDir.getPath() + "/dotenv.gradle"

@@ -1,0 +1,355 @@
+/**
+ * Accessibility Styles for WCAG 2.1 Compliance
+ * Provides visual enhancements for various accessibility needs
+ */
+
+/* Screen Reader Only Utility */
+.sr-only {
+  position: absolute !important;
+  width: 1px !important;
+  height: 1px !important;
+  padding: 0 !important;
+  margin: -1px !important;
+  overflow: hidden !important;
+  clip: rect(0, 0, 0, 0) !important;
+  white-space: nowrap !important;
+  border: 0 !important;
+}
+
+/* Make sr-only content visible when focused */
+.sr-only:focus,
+.focus\:not-sr-only:focus {
+  position: static !important;
+  width: auto !important;
+  height: auto !important;
+  padding: 0.5rem !important;
+  margin: 0 !important;
+  overflow: visible !important;
+  clip: auto !important;
+  white-space: normal !important;
+  background-color: hsl(var(--background)) !important;
+  color: hsl(var(--foreground)) !important;
+  border: 2px solid hsl(var(--ring)) !important;
+  border-radius: 0.375rem !important;
+  z-index: 1000 !important;
+}
+
+/* High Contrast Mode */
+.high-contrast {
+  --background: 255 255 255;
+  --foreground: 0 0 0;
+  --muted: 240 240 240;
+  --muted-foreground: 64 64 64;
+  --popover: 255 255 255;
+  --popover-foreground: 0 0 0;
+  --card: 255 255 255;
+  --card-foreground: 0 0 0;
+  --border: 0 0 0;
+  --input: 240 240 240;
+  --primary: 0 0 0;
+  --primary-foreground: 255 255 255;
+  --secondary: 220 220 220;
+  --secondary-foreground: 0 0 0;
+  --accent: 220 220 220;
+  --accent-foreground: 0 0 0;
+  --destructive: 139 0 0;
+  --destructive-foreground: 255 255 255;
+  --ring: 0 0 0;
+  --radius: 0.5rem;
+}
+
+.high-contrast * {
+  text-shadow: none !important;
+  box-shadow: none !important;
+}
+
+.high-contrast button,
+.high-contrast input,
+.high-contrast select,
+.high-contrast textarea {
+  border: 2px solid hsl(var(--border)) !important;
+}
+
+.high-contrast a {
+  text-decoration: underline !important;
+  color: hsl(var(--primary)) !important;
+}
+
+.high-contrast a:hover,
+.high-contrast a:focus {
+  background-color: hsl(var(--primary)) !important;
+  color: hsl(var(--primary-foreground)) !important;
+}
+
+/* Reduced Motion */
+.reduce-motion *,
+.reduce-motion *::before,
+.reduce-motion *::after {
+  animation-duration: 0.01ms !important;
+  animation-iteration-count: 1 !important;
+  transition-duration: 0.01ms !important;
+  scroll-behavior: auto !important;
+}
+
+.reduce-motion .animate-spin {
+  animation: none !important;
+}
+
+.reduce-motion .animate-pulse {
+  animation: none !important;
+}
+
+.reduce-motion .animate-bounce {
+  animation: none !important;
+}
+
+/* Font Size Scaling */
+:root {
+  --font-size-multiplier: 1;
+}
+
+html {
+  font-size: calc(16px * var(--font-size-multiplier));
+}
+
+/* Color Blindness Filters */
+.filter-protanopia {
+  filter: url('#protanopia-filter');
+}
+
+.filter-deuteranopia {
+  filter: url('#deuteranopia-filter');
+}
+
+.filter-tritanopia {
+  filter: url('#tritanopia-filter');
+}
+
+.filter-achromatopsia {
+  filter: grayscale(100%);
+}
+
+/* Enhanced Focus Indicators */
+*:focus {
+  outline: 2px solid hsl(var(--ring)) !important;
+  outline-offset: 2px !important;
+}
+
+/* Remove default focus styles and apply custom ones */
+*:focus:not(:focus-visible) {
+  outline: none;
+}
+
+*:focus-visible {
+  outline: 2px solid hsl(var(--ring)) !important;
+  outline-offset: 2px !important;
+}
+
+/* Enhanced focus for interactive elements */
+button:focus-visible,
+a:focus-visible,
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible,
+[tabindex]:focus-visible {
+  outline: 3px solid hsl(var(--ring)) !important;
+  outline-offset: 2px !important;
+  box-shadow: 0 0 0 1px hsl(var(--background)) !important;
+}
+
+/* Keyboard navigation enhancements */
+.keyboard-nav *:focus {
+  outline: 3px solid hsl(var(--ring)) !important;
+  outline-offset: 2px !important;
+  z-index: 1;
+  position: relative;
+}
+
+/* Skip links styling */
+.skip-link {
+  position: absolute;
+  top: -40px;
+  left: 6px;
+  background: hsl(var(--primary));
+  color: hsl(var(--primary-foreground));
+  padding: 8px;
+  text-decoration: none;
+  border-radius: 0 0 4px 4px;
+  z-index: 1000;
+  font-weight: bold;
+}
+
+.skip-link:focus {
+  top: 0;
+}
+
+/* Error states with better contrast */
+.error,
+[aria-invalid="true"] {
+  border-color: hsl(var(--destructive)) !important;
+}
+
+.error:focus,
+[aria-invalid="true"]:focus {
+  outline-color: hsl(var(--destructive)) !important;
+  box-shadow: 0 0 0 1px hsl(var(--destructive)) !important;
+}
+
+/* Required field indicators */
+.required::after,
+[required] + label::after,
+[aria-required="true"] + label::after {
+  content: " *";
+  color: hsl(var(--destructive));
+  font-weight: bold;
+}
+
+/* Loading states */
+[aria-busy="true"] {
+  cursor: wait;
+  opacity: 0.7;
+}
+
+/* Disabled states */
+[disabled],
+[aria-disabled="true"] {
+  opacity: 0.5;
+  cursor: not-allowed;
+  pointer-events: none;
+}
+
+/* Table accessibility */
+table {
+  border-collapse: collapse;
+}
+
+th {
+  background-color: hsl(var(--muted));
+  font-weight: bold;
+  text-align: left;
+  padding: 0.75rem;
+  border: 1px solid hsl(var(--border));
+}
+
+td {
+  padding: 0.75rem;
+  border: 1px solid hsl(var(--border));
+}
+
+/* List improvements */
+ul[role="list"],
+ol[role="list"] {
+  list-style: none;
+  padding-left: 0;
+}
+
+/* Button groups */
+[role="group"] button:not(:last-child),
+.button-group button:not(:last-child) {
+  margin-right: -1px;
+}
+
+/* Form validation messages */
+.validation-message {
+  display: block;
+  margin-top: 0.25rem;
+  font-size: 0.875rem;
+  color: hsl(var(--destructive));
+}
+
+.validation-message[aria-live] {
+  min-height: 1.25rem;
+}
+
+/* Progress indicators */
+progress,
+[role="progressbar"] {
+  width: 100%;
+  height: 1rem;
+  background-color: hsl(var(--muted));
+  border-radius: 0.5rem;
+  overflow: hidden;
+}
+
+/* Landmark regions */
+main {
+  outline: none;
+}
+
+main:focus {
+  outline: 2px solid transparent;
+}
+
+/* Print styles for accessibility */
+@media print {
+  .no-print,
+  .skip-link,
+  nav,
+  .accessibility-toolbar {
+    display: none !important;
+  }
+  
+  a::after {
+    content: " (" attr(href) ")";
+    font-size: 0.8em;
+    color: #666;
+  }
+  
+  abbr::after {
+    content: " (" attr(title) ")";
+    font-size: 0.8em;
+    color: #666;
+  }
+}
+
+/* SVG Filters for Color Blindness Support */
+svg.accessibility-filters {
+  position: absolute;
+  width: 0;
+  height: 0;
+  visibility: hidden;
+}
+
+/* Tooltip improvements */
+[role="tooltip"] {
+  position: absolute;
+  z-index: 1000;
+  padding: 0.5rem;
+  background-color: hsl(var(--popover));
+  color: hsl(var(--popover-foreground));
+  border: 1px solid hsl(var(--border));
+  border-radius: 0.375rem;
+  font-size: 0.875rem;
+  max-width: 20rem;
+  word-wrap: break-word;
+}
+
+/* Dialog/Modal improvements */
+[role="dialog"],
+[role="alertdialog"] {
+  box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -2px rgba(0, 0, 0, 0.05);
+}
+
+/* Responsive text sizing */
+@media (max-width: 768px) {
+  html {
+    font-size: calc(14px * var(--font-size-multiplier));
+  }
+}
+
+@media (max-width: 480px) {
+  html {
+    font-size: calc(12px * var(--font-size-multiplier));
+  }
+  
+  /* Ensure minimum touch target size */
+  button,
+  a,
+  input,
+  select,
+  textarea,
+  [tabindex] {
+    min-height: 44px;
+    min-width: 44px;
+  }
+}

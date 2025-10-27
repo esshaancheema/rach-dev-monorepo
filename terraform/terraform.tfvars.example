@@ -1,0 +1,117 @@
+# Environment Configuration
+environment = "production"
+aws_region  = "us-east-1"
+project_name = "zoptal"
+
+# VPC Configuration
+vpc_cidr = "10.0.0.0/16"
+enable_nat_gateway = true
+single_nat_gateway = false  # Set to true for cost savings in dev/staging
+enable_vpn_gateway = false
+
+# EKS Configuration
+eks_cluster_version = "1.28"
+
+# Example node groups configuration
+eks_node_groups = {
+  general = {
+    instance_types = ["t3.medium", "t3.large"]
+    capacity_type  = "ON_DEMAND"
+    min_size      = 2
+    max_size      = 10
+    desired_size  = 3
+    disk_size     = 50
+    labels = {
+      role = "general"
+    }
+    taints = []
+  }
+  compute = {
+    instance_types = ["c5.large", "c5.xlarge"]
+    capacity_type  = "SPOT"
+    min_size      = 0
+    max_size      = 20
+    desired_size  = 2
+    disk_size     = 100
+    labels = {
+      role = "compute"
+    }
+    taints = [{
+      key    = "compute"
+      value  = "true"
+      effect = "NO_SCHEDULE"
+    }]
+  }
+}
+
+# RDS Configuration
+rds_instance_class = "db.t3.micro"           # Use db.r5.large or higher for production
+rds_allocated_storage = 20
+rds_max_allocated_storage = 100
+rds_backup_retention_period = 7
+rds_multi_az = true                          # Set to false for cost savings in dev/staging
+
+# ElastiCache Configuration
+elasticache_node_type = "cache.t3.micro"    # Use cache.r6g.large or higher for production
+elasticache_num_cache_nodes = 1              # Use 3 for production with failover
+
+# S3 Configuration
+s3_versioning_enabled = true
+s3_lifecycle_enabled = true
+
+# Domain Configuration
+domain_name = "your-domain.com"              # Set your actual domain or leave empty for ALB DNS
+create_route53_zone = true                   # Set to false if you manage DNS elsewhere
+
+# Monitoring Configuration
+enable_cloudwatch_logs = true
+log_retention_days = 30                      # Increase to 90 or 365 for production
+alert_email = "alerts@your-domain.com"       # Set your alert email address
+
+# Security Configuration
+enable_guardduty = true
+enable_config = true
+enable_cloudtrail = true
+enable_waf = true
+enable_shield_advanced = false              # Set to true for high-traffic production apps
+enable_certificate_transparency_logging = true
+
+# Geo-blocking configuration (optional)
+blocked_countries = []                       # e.g., ["CN", "RU"] to block China and Russia
+
+# Backup Configuration
+backup_schedule = "cron(0 2 ? * * *)"       # Daily at 2 AM UTC
+backup_retention_days = 30
+
+# Cost Optimization
+enable_cost_anomaly_detection = true
+cost_budget_limit = 500                     # Monthly budget in USD
+
+# Application Secrets (store sensitive values in AWS Secrets Manager)
+secrets = {
+  # Example secrets - these will be stored in AWS Secrets Manager
+  # "openai-api-key" = "sk-..."
+  # "stripe-secret-key" = "sk_..."
+  # "sendgrid-api-key" = "SG..."
+}
+
+# Environment-specific overrides
+# For development environment, you might want:
+# rds_instance_class = "db.t3.micro"
+# rds_multi_az = false
+# elasticache_num_cache_nodes = 1
+# single_nat_gateway = true
+# cost_budget_limit = 100
+
+# For staging environment, you might want:
+# rds_instance_class = "db.t3.small"
+# elasticache_node_type = "cache.t3.small"
+# cost_budget_limit = 200
+
+# For production environment, you should use:
+# rds_instance_class = "db.r5.large"
+# rds_multi_az = true
+# elasticache_node_type = "cache.r6g.large"
+# elasticache_num_cache_nodes = 3
+# enable_shield_advanced = true
+# log_retention_days = 365

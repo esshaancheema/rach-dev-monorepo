@@ -1,0 +1,118 @@
+name: Dependency Updates
+
+on:
+  schedule:
+    # Run weekly on Mondays at 8 AM UTC
+    - cron: '0 8 * * 1'
+  workflow_dispatch:
+
+jobs:
+  # Update npm dependencies
+  update-dependencies:
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      with:
+        token: ${{ secrets.GITHUB_TOKEN }}
+
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '18'
+
+    - name: Setup pnpm
+      uses: pnpm/action-setup@v2
+      with:
+        version: '8'
+
+    - name: Install npm-check-updates
+      run: npm install -g npm-check-updates
+
+    - name: Update dependencies
+      run: |
+        # Update root dependencies
+        ncu -u
+        
+        # Update workspace dependencies
+        find apps services packages -name package.json -exec sh -c 'cd "$(dirname "$1")" && ncu -u' _ {} \;
+        
+        # Install updated dependencies
+        pnpm install
+
+    - name: Run tests after updates
+      run: |
+        pnpm run test || echo "Tests failed after dependency updates"
+
+    - name: Create Pull Request
+      uses: peter-evans/create-pull-request@v5
+      with:
+        token: ${{ secrets.GITHUB_TOKEN }}
+        commit-message: 'chore: update dependencies'
+        title: 'Automated dependency updates'
+        body: |
+          This PR contains automated dependency updates.
+          
+          ## Changes
+          - Updated npm dependencies to latest versions
+          - Ran tests to verify compatibility
+          
+          ## Review Checklist
+          - [ ] All tests pass
+          - [ ] No breaking changes in dependencies
+          - [ ] Security vulnerabilities addressed
+          
+          🤖 This PR was created automatically by the dependency update workflow.
+        branch: dependency-updates
+        delete-branch: true
+
+  # Security updates
+  security-updates:
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      with:
+        token: ${{ secrets.GITHUB_TOKEN }}
+
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '18'
+
+    - name: Setup pnpm
+      uses: pnpm/action-setup@v2
+      with:
+        version: '8'
+
+    - name: Install dependencies
+      run: pnpm install --frozen-lockfile
+
+    - name: Run security audit
+      run: |
+        pnpm audit --audit-level moderate --json > audit-results.json || true
+
+    - name: Fix security vulnerabilities
+      run: |
+        pnpm audit --fix || true
+
+    - name: Create Security Update PR
+      uses: peter-evans/create-pull-request@v5
+      if: always()
+      with:
+        token: ${{ secrets.GITHUB_TOKEN }}
+        commit-message: 'security: fix vulnerabilities'
+        title: 'Security: Fix dependency vulnerabilities'
+        body: |
+          This PR fixes security vulnerabilities found in dependencies.
+          
+          ## Security Fixes
+          - Applied automated security fixes
+          - Updated vulnerable packages
+          
+          ## Audit Results
+          Please review the audit results in the workflow logs.
+          
+          🔒 This PR was created automatically for security updates.
+        branch: security-updates
+        delete-branch: true

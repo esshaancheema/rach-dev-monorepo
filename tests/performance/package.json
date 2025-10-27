@@ -1,0 +1,51 @@
+{
+  "name": "@zoptal/performance-tests",
+  "version": "1.0.0",
+  "description": "Performance and load testing suite for Zoptal platform",
+  "main": "index.js",
+  "scripts": {
+    "install:k6": "brew install k6 || echo 'K6 installation skipped - install manually'",
+    "test:k6:api": "k6 run k6/scenarios/api-performance.js",
+    "test:k6:auth": "k6 run k6/scenarios/auth-performance.js",
+    "test:k6:load": "k6 run k6/scenarios/load-test.js",
+    "test:k6:stress": "k6 run k6/scenarios/stress-test.js",
+    "test:k6:spike": "k6 run k6/scenarios/spike-test.js",
+    "test:k6:soak": "k6 run k6/scenarios/soak-test.js",
+    "test:artillery:load": "artillery run artillery/scenarios/load-test.yml",
+    "test:artillery:websocket": "artillery run artillery/scenarios/websocket-test.yml",
+    "test:artillery:upload": "artillery run artillery/scenarios/file-upload-test.yml",
+    "test:artillery:realtime": "artillery run artillery/scenarios/realtime-test.yml",
+    "test:performance:api": "npm run test:k6:api && npm run test:artillery:load",
+    "test:performance:load": "npm run test:k6:load && npm run test:artillery:load",
+    "test:performance:stress": "npm run test:k6:stress",
+    "test:performance:all": "npm run test:performance:api && npm run test:performance:load && npm run test:performance:stress",
+    "test:ci": "npm run test:k6:api -- --quiet --no-color --out json=results/k6-results.json",
+    "report:generate": "node scripts/generate-report.js",
+    "report:dashboard": "node scripts/start-dashboard.js",
+    "setup:environment": "node scripts/setup-test-environment.js",
+    "cleanup:environment": "node scripts/cleanup-test-environment.js",
+    "analyze:results": "node scripts/analyze-results.js",
+    "compare:baseline": "node scripts/compare-baseline.js"
+  },
+  "dependencies": {
+    "artillery": "^2.0.0",
+    "artillery-plugin-metrics-by-endpoint": "^1.1.0",
+    "artillery-plugin-aws-sigv4": "^1.0.0",
+    "dotenv": "^16.4.5",
+    "faker": "^6.6.6",
+    "csv-parser": "^3.0.0",
+    "csv-writer": "^1.6.0",
+    "express": "^4.19.2",
+    "socket.io-client": "^4.7.5"
+  },
+  "devDependencies": {
+    "@types/node": "^20.12.7",
+    "chart.js": "^4.4.2",
+    "commander": "^12.0.0",
+    "moment": "^2.30.1",
+    "mustache": "^4.2.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}

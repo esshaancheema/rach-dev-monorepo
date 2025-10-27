@@ -1,0 +1,374 @@
+# External Gateway Configuration for Zoptal Service Mesh
+
+apiVersion: networking.istio.io/v1beta1
+kind: Gateway
+metadata:
+  name: zoptal-external-gateway
+  namespace: istio-system
+spec:
+  selector:
+    istio: ingressgateway
+  servers:
+  # HTTP Server - Redirect to HTTPS
+  - port:
+      number: 80
+      name: http
+      protocol: HTTP
+    hosts:
+    - "*.zoptal.com"
+    - "zoptal.com"
+    tls:
+      httpsRedirect: true
+  
+  # HTTPS Server
+  - port:
+      number: 443
+      name: https
+      protocol: HTTPS
+    hosts:
+    - "*.zoptal.com"
+    - "zoptal.com"
+    tls:
+      mode: SIMPLE
+      credentialName: zoptal-tls-secret
+      minProtocolVersion: TLSV1_2
+      maxProtocolVersion: TLSV1_3
+      cipherSuites:
+      - ECDHE-RSA-AES256-GCM-SHA384
+      - ECDHE-RSA-AES128-GCM-SHA256
+      - ECDHE-RSA-CHACHA20-POLY1305
+
+  # Admin HTTPS Server with client certificate
+  - port:
+      number: 8443
+      name: admin-https
+      protocol: HTTPS
+    hosts:
+    - "admin.zoptal.com"
+    tls:
+      mode: MUTUAL
+      credentialName: zoptal-admin-tls-secret
+      minProtocolVersion: TLSV1_2
+
+---
+# Main application virtual service
+apiVersion: networking.istio.io/v1beta1
+kind: VirtualService
+metadata:
+  name: zoptal-main
+  namespace: istio-system
+spec:
+  hosts:
+  - zoptal.com
+  - www.zoptal.com
+  gateways:
+  - zoptal-external-gateway
+  http:
+  # Redirect www to main domain
+  - match:
+    - headers:
+        ":authority":
+          exact: www.zoptal.com
+    redirect:
+      authority: zoptal.com
+      redirectCode: 301
+  
+  # Health check endpoint
+  - match:
+    - uri:
+        exact: /health
+    route:
+    - destination:
+        host: auth-service.zoptal-production.svc.cluster.local
+        port:
+          number: 3001
+    timeout: 5s
+  
+  # Static assets and frontend
+  - match:
+    - uri:
+        prefix: /static/
+    - uri:
+        prefix: /assets/
+    - uri:
+        regex: ".*\\.(js|css|png|jpg|jpeg|gif|ico|svg|woff|woff2|ttf|eot)$"
+    route:
+    - destination:
+        host: frontend.zoptal-production.svc.cluster.local
+        port:
+          number: 3000
+    headers:
+      response:
+        add:
+          Cache-Control: "public, max-age=31536000, immutable"
+          X-Content-Type-Options: "nosniff"
+  
+  # API routes
+  - match:
+    - uri:
+        prefix: /api/auth
+    route:
+    - destination:
+        host: auth-service.zoptal-production.svc.cluster.local
+        port:
+          number: 3001
+    timeout: 30s
+    retries:
+      attempts: 3
+      perTryTimeout: 10s
+  
+  - match:
+    - uri:
+        prefix: /api/projects
+    - uri:
+        prefix: /api/files
+    route:
+    - destination:
+        host: project-service.zoptal-production.svc.cluster.local
+        port:
+          number: 3002
+    timeout: 60s
+    retries:
+      attempts: 3
+      perTryTimeout: 20s
+  
+  - match:
+    - uri:
+        prefix: /api/ai
+    route:
+    - destination:
+        host: ai-service.zoptal-production.svc.cluster.local
+        port:
+          number: 3003
+    timeout: 300s
+    retries:
+      attempts: 2
+      perTryTimeout: 150s
+  
+  - match:
+    - uri:
+        prefix: /api/notifications
+    route:
+    - destination:
+        host: notification-service.zoptal-production.svc.cluster.local
+        port:
+          number: 3004
+    timeout: 30s
+    retries:
+      attempts: 3
+      perTryTimeout: 10s
+  
+  - match:
+    - uri:
+        prefix: /api/billing
+    - uri:
+        prefix: /api/webhooks/stripe
+    route:
+    - destination:
+        host: billing-service.zoptal-production.svc.cluster.local
+        port:
+          number: 3005
+    timeout: 60s
+    retries:
+      attempts: 2
+      perTryTimeout: 30s
+  
+  # Default route to frontend
+  - route:
+    - destination:
+        host: frontend.zoptal-production.svc.cluster.local
+        port:
+          number: 3000
+    headers:
+      response:
+        add:
+          X-Frame-Options: "DENY"
+          X-Content-Type-Options: "nosniff"
+          X-XSS-Protection: "1; mode=block"
+          Strict-Transport-Security: "max-age=31536000; includeSubDomains"
+          Referrer-Policy: "strict-origin-when-cross-origin"
+
+---
+# Admin virtual service
+apiVersion: networking.istio.io/v1beta1
+kind: VirtualService
+metadata:
+  name: zoptal-admin
+  namespace: istio-system
+spec:
+  hosts:
+  - admin.zoptal.com
+  gateways:
+  - zoptal-external-gateway
+  http:
+  # Admin API routes
+  - match:
+    - uri:
+        prefix: /api/admin
+    route:
+    - destination:
+        host: auth-service.zoptal-production.svc.cluster.local
+        port:
+          number: 3001
+    timeout: 60s
+    headers:
+      request:
+        add:
+          X-Admin-Request: "true"
+  
+  # Admin dashboard
+  - route:
+    - destination:
+        host: admin-panel.zoptal-production.svc.cluster.local
+        port:
+          number: 3001
+    headers:
+      response:
+        add:
+          X-Frame-Options: "DENY"
+          X-Content-Type-Options: "nosniff"
+          X-XSS-Protection: "1; mode=block"
+          Strict-Transport-Security: "max-age=31536000; includeSubDomains"
+
+---
+# Monitoring virtual services
+apiVersion: networking.istio.io/v1beta1
+kind: VirtualService
+metadata:
+  name: zoptal-monitoring
+  namespace: istio-system
+spec:
+  hosts:
+  - monitoring.zoptal.com
+  - grafana.zoptal.com
+  - prometheus.zoptal.com
+  - jaeger.zoptal.com
+  - kiali.zoptal.com
+  gateways:
+  - zoptal-external-gateway
+  http:
+  # Grafana
+  - match:
+    - headers:
+        ":authority":
+          exact: grafana.zoptal.com
+    - headers:
+        ":authority":
+          exact: monitoring.zoptal.com
+      uri:
+        prefix: /grafana
+    route:
+    - destination:
+        host: grafana.istio-system.svc.cluster.local
+        port:
+          number: 3000
+  
+  # Prometheus
+  - match:
+    - headers:
+        ":authority":
+          exact: prometheus.zoptal.com
+    - headers:
+        ":authority":
+          exact: monitoring.zoptal.com
+      uri:
+        prefix: /prometheus
+    route:
+    - destination:
+        host: prometheus.istio-system.svc.cluster.local
+        port:
+          number: 9090
+  
+  # Jaeger
+  - match:
+    - headers:
+        ":authority":
+          exact: jaeger.zoptal.com
+    - headers:
+        ":authority":
+          exact: monitoring.zoptal.com
+      uri:
+        prefix: /jaeger
+    route:
+    - destination:
+        host: jaeger-query.istio-system.svc.cluster.local
+        port:
+          number: 16686
+  
+  # Kiali
+  - match:
+    - headers:
+        ":authority":
+          exact: kiali.zoptal.com
+    - headers:
+        ":authority":
+          exact: monitoring.zoptal.com
+      uri:
+        prefix: /kiali
+    route:
+    - destination:
+        host: kiali.istio-system.svc.cluster.local
+        port:
+          number: 20001
+  
+  # Default monitoring dashboard
+  - match:
+    - headers:
+        ":authority":
+          exact: monitoring.zoptal.com
+    route:
+    - destination:
+        host: grafana.istio-system.svc.cluster.local
+        port:
+          number: 3000
+
+---
+# Destination rule for frontend load balancing
+apiVersion: networking.istio.io/v1beta1
+kind: DestinationRule
+metadata:
+  name: frontend-load-balancer
+  namespace: istio-system
+spec:
+  host: frontend.zoptal-production.svc.cluster.local
+  trafficPolicy:
+    loadBalancer:
+      simple: ROUND_ROBIN
+    connectionPool:
+      tcp:
+        maxConnections: 100
+      http:
+        http1MaxPendingRequests: 50
+        maxRequestsPerConnection: 10
+        maxRetries: 3
+    circuitBreaker:
+      consecutiveGatewayErrors: 5
+      consecutive5xxErrors: 5
+      interval: 30s
+      baseEjectionTime: 30s
+      maxEjectionPercent: 50
+
+---
+# TLS certificate secret (placeholder - replace with actual cert)
+apiVersion: v1
+kind: Secret
+metadata:
+  name: zoptal-tls-secret
+  namespace: istio-system
+type: kubernetes.io/tls
+data:
+  tls.crt: LS0tLS1CRUdJTiBDRVJUSUZJQ0FURS0tLS0t  # Base64 encoded certificate
+  tls.key: LS0tLS1CRUdJTiBQUklWQVRFIEtFWS0tLS0t  # Base64 encoded private key
+
+---
+# Admin TLS certificate secret (placeholder)
+apiVersion: v1
+kind: Secret
+metadata:
+  name: zoptal-admin-tls-secret
+  namespace: istio-system
+type: kubernetes.io/tls
+data:
+  tls.crt: LS0tLS1CRUdJTiBDRVJUSUZJQ0FURS0tLS0t  # Base64 encoded certificate
+  tls.key: LS0tLS1CRUdJTiBQUklWQVRFIEtFWS0tLS0t  # Base64 encoded private key
+  ca.crt: LS0tLS1CRUdJTiBDRVJUSUZJQ0FURS0tLS0t   # Base64 encoded CA certificate

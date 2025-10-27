@@ -1,0 +1,187 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: zoptal-app-config
+  namespace: zoptal
+data:
+  # Application Configuration
+  NODE_ENV: "production"
+  LOG_LEVEL: "info"
+  
+  # Service URLs
+  AUTH_SERVICE_URL: "http://auth-service.zoptal.svc.cluster.local:3001"
+  WEB_MAIN_URL: "http://web-main.zoptal.svc.cluster.local:3000"
+  
+  # Public URLs
+  PUBLIC_API_URL: "https://api.zoptal.com"
+  PUBLIC_WEB_URL: "https://www.zoptal.com"
+  
+  # Feature Flags
+  ENABLE_RATE_LIMITING: "true"
+  ENABLE_METRICS: "true"
+  ENABLE_TRACING: "true"
+  
+  # Rate Limiting
+  RATE_LIMIT_WINDOW: "60000"
+  RATE_LIMIT_MAX_REQUESTS: "100"
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: zoptal-nginx-config
+  namespace: zoptal
+data:
+  nginx.conf: |
+    user nginx;
+    worker_processes auto;
+    error_log /var/log/nginx/error.log warn;
+    pid /var/run/nginx.pid;
+
+    events {
+        worker_connections 1024;
+        use epoll;
+        multi_accept on;
+    }
+
+    http {
+        include /etc/nginx/mime.types;
+        default_type application/octet-stream;
+
+        log_format main '$remote_addr - $remote_user [$time_local] "$request" '
+                        '$status $body_bytes_sent "$http_referer" '
+                        '"$http_user_agent" "$http_x_forwarded_for"';
+
+        access_log /var/log/nginx/access.log main;
+
+        # Performance optimizations
+        sendfile on;
+        tcp_nopush on;
+        tcp_nodelay on;
+        keepalive_timeout 65;
+        types_hash_max_size 2048;
+        client_max_body_size 20M;
+
+        # Gzip compression
+        gzip on;
+        gzip_vary on;
+        gzip_proxied any;
+        gzip_comp_level 6;
+        gzip_types text/plain text/css text/xml text/javascript application/json application/javascript application/xml+rss application/rss+xml application/atom+xml image/svg+xml;
+
+        # Security headers
+        add_header X-Frame-Options "SAMEORIGIN" always;
+        add_header X-Content-Type-Options "nosniff" always;
+        add_header X-XSS-Protection "1; mode=block" always;
+        add_header Referrer-Policy "no-referrer-when-downgrade" always;
+        add_header Content-Security-Policy "default-src 'self' http: https: data: blob: 'unsafe-inline'" always;
+
+        # Upstream configurations
+        upstream web_main {
+            least_conn;
+            server web-main:3000 max_fails=3 fail_timeout=30s;
+            keepalive 32;
+        }
+
+        upstream auth_service {
+            least_conn;
+            server auth-service:3001 max_fails=3 fail_timeout=30s;
+            keepalive 32;
+        }
+
+        # Rate limiting
+        limit_req_zone $binary_remote_addr zone=api_limit:10m rate=10r/s;
+        limit_req_zone $binary_remote_addr zone=auth_limit:10m rate=5r/s;
+
+        server {
+            listen 80;
+            server_name _;
+
+            # Health check endpoint
+            location /health {
+                access_log off;
+                return 200 "healthy\n";
+                add_header Content-Type text/plain;
+            }
+
+            # API routes
+            location /api/auth {
+                limit_req zone=auth_limit burst=20 nodelay;
+                proxy_pass http://auth_service;
+                proxy_http_version 1.1;
+                proxy_set_header Upgrade $http_upgrade;
+                proxy_set_header Connection 'upgrade';
+                proxy_set_header Host $host;
+                proxy_set_header X-Real-IP $remote_addr;
+                proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+                proxy_set_header X-Forwarded-Proto $scheme;
+                proxy_cache_bypass $http_upgrade;
+            }
+
+            location /api {
+                limit_req zone=api_limit burst=50 nodelay;
+                proxy_pass http://web_main;
+                proxy_http_version 1.1;
+                proxy_set_header Upgrade $http_upgrade;
+                proxy_set_header Connection 'upgrade';
+                proxy_set_header Host $host;
+                proxy_set_header X-Real-IP $remote_addr;
+                proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+                proxy_set_header X-Forwarded-Proto $scheme;
+                proxy_cache_bypass $http_upgrade;
+            }
+
+            # Main website
+            location / {
+                proxy_pass http://web_main;
+                proxy_http_version 1.1;
+                proxy_set_header Upgrade $http_upgrade;
+                proxy_set_header Connection 'upgrade';
+                proxy_set_header Host $host;
+                proxy_set_header X-Real-IP $remote_addr;
+                proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+                proxy_set_header X-Forwarded-Proto $scheme;
+                proxy_cache_bypass $http_upgrade;
+            }
+        }
+    }
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: zoptal-redis-config
+  namespace: zoptal
+data:
+  redis.conf: |
+    # Redis configuration for production
+    bind 0.0.0.0
+    protected-mode yes
+    port 6379
+    tcp-backlog 511
+    timeout 0
+    tcp-keepalive 300
+    
+    # Persistence
+    save 900 1
+    save 300 10
+    save 60 10000
+    stop-writes-on-bgsave-error yes
+    rdbcompression yes
+    rdbchecksum yes
+    dbfilename dump.rdb
+    dir /data
+    
+    # Logging
+    loglevel notice
+    logfile ""
+    
+    # Memory management
+    maxmemory 2gb
+    maxmemory-policy allkeys-lru
+    
+    # Append only mode
+    appendonly yes
+    appendfilename "appendonly.aof"
+    appendfsync everysec
+    no-appendfsync-on-rewrite no
+    auto-aof-rewrite-percentage 100
+    auto-aof-rewrite-min-size 64mb

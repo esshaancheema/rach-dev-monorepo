@@ -1,0 +1,22 @@
+{
+  "name": "zoptal-canary-controller",
+  "version": "1.0.0",
+  "description": "Automated canary deployment controller with metrics-based analysis",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js",
+    "dev": "nodemon index.js"
+  },
+  "dependencies": {
+    "express": "^4.18.2",
+    "@kubernetes/client-node": "^0.20.0",
+    "axios": "^1.6.0",
+    "node-cron": "^3.0.3"
+  },
+  "devDependencies": {
+    "nodemon": "^3.0.1"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}

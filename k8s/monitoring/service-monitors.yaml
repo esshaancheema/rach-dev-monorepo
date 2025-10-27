@@ -1,0 +1,261 @@
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: zoptal-auth-service
+  namespace: monitoring
+  labels:
+    team: zoptal
+    service: auth-service
+spec:
+  selector:
+    matchLabels:
+      app: auth-service
+  namespaceSelector:
+    matchNames:
+    - zoptal
+  endpoints:
+  - port: http
+    path: /metrics
+    interval: 30s
+    scrapeTimeout: 10s
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: zoptal-project-service
+  namespace: monitoring
+  labels:
+    team: zoptal
+    service: project-service
+spec:
+  selector:
+    matchLabels:
+      app: project-service
+  namespaceSelector:
+    matchNames:
+    - zoptal
+  endpoints:
+  - port: http
+    path: /metrics
+    interval: 30s
+    scrapeTimeout: 10s
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: zoptal-ai-service
+  namespace: monitoring
+  labels:
+    team: zoptal
+    service: ai-service
+spec:
+  selector:
+    matchLabels:
+      app: ai-service
+  namespaceSelector:
+    matchNames:
+    - zoptal
+  endpoints:
+  - port: http
+    path: /metrics
+    interval: 30s
+    scrapeTimeout: 10s
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: zoptal-billing-service
+  namespace: monitoring
+  labels:
+    team: zoptal
+    service: billing-service
+spec:
+  selector:
+    matchLabels:
+      app: billing-service
+  namespaceSelector:
+    matchNames:
+    - zoptal
+  endpoints:
+  - port: http
+    path: /metrics
+    interval: 30s
+    scrapeTimeout: 10s
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: zoptal-notification-service
+  namespace: monitoring
+  labels:
+    team: zoptal
+    service: notification-service
+spec:
+  selector:
+    matchLabels:
+      app: notification-service
+  namespaceSelector:
+    matchNames:
+    - zoptal
+  endpoints:
+  - port: http
+    path: /metrics
+    interval: 30s
+    scrapeTimeout: 10s
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: zoptal-analytics-service
+  namespace: monitoring
+  labels:
+    team: zoptal
+    service: analytics-service
+spec:
+  selector:
+    matchLabels:
+      app: analytics-service
+  namespaceSelector:
+    matchNames:
+    - zoptal
+  endpoints:
+  - port: http
+    path: /metrics
+    interval: 30s
+    scrapeTimeout: 10s
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: zoptal-web-main
+  namespace: monitoring
+  labels:
+    team: zoptal
+    service: web-main
+spec:
+  selector:
+    matchLabels:
+      app: web-main
+  namespaceSelector:
+    matchNames:
+    - zoptal
+  endpoints:
+  - port: http
+    path: /api/metrics
+    interval: 30s
+    scrapeTimeout: 10s
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: zoptal-admin
+  namespace: monitoring
+  labels:
+    team: zoptal
+    service: admin
+spec:
+  selector:
+    matchLabels:
+      app: admin
+  namespaceSelector:
+    matchNames:
+    - zoptal
+  endpoints:
+  - port: http
+    path: /api/metrics
+    interval: 30s
+    scrapeTimeout: 10s
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: zoptal-developer-portal
+  namespace: monitoring
+  labels:
+    team: zoptal
+    service: developer-portal
+spec:
+  selector:
+    matchLabels:
+      app: developer-portal
+  namespaceSelector:
+    matchNames:
+    - zoptal
+  endpoints:
+  - port: http
+    path: /api/metrics
+    interval: 30s
+    scrapeTimeout: 10s
+---
+# Kubernetes System Components
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: kubelet
+  namespace: monitoring
+  labels:
+    team: zoptal
+    k8s-app: kubelet
+spec:
+  jobLabel: k8s-app
+  endpoints:
+  - port: https-metrics
+    scheme: https
+    tlsConfig:
+      caFile: /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+      insecureSkipVerify: true
+    bearerTokenFile: /var/run/secrets/kubernetes.io/serviceaccount/token
+    honorLabels: true
+    relabelings:
+    - sourceLabels: [__meta_kubernetes_node_name]
+      regex: (.+)
+      targetLabel: __address__
+      replacement: ${1}:10250
+    metricRelabelings:
+    - sourceLabels: [__name__]
+      regex: (kubelet_volume_stats_capacity_bytes|kubelet_volume_stats_available_bytes|kubelet_volume_stats_used_bytes|kubelet_volume_stats_inodes|kubelet_volume_stats_inodes_free|kubelet_volume_stats_inodes_used)
+      action: keep
+  - port: https-metrics
+    scheme: https
+    path: /metrics/cadvisor
+    tlsConfig:
+      caFile: /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+      insecureSkipVerify: true
+    bearerTokenFile: /var/run/secrets/kubernetes.io/serviceaccount/token
+    honorLabels: true
+    relabelings:
+    - sourceLabels: [__meta_kubernetes_node_name]
+      regex: (.+)
+      targetLabel: __address__
+      replacement: ${1}:10250
+    metricRelabelings:
+    - sourceLabels: [__name__]
+      regex: (container_cpu_usage_seconds_total|container_memory_working_set_bytes|container_fs_usage_bytes|container_fs_limit_bytes|container_network_receive_bytes_total|container_network_transmit_bytes_total)
+      action: keep
+  selector:
+    matchLabels:
+      k8s-app: kubelet
+  namespaceSelector:
+    matchNames:
+    - kube-system
+---
+# Node Exporter for system metrics
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: node-exporter
+  namespace: monitoring
+  labels:
+    team: zoptal
+    app: node-exporter
+spec:
+  selector:
+    matchLabels:
+      app: node-exporter
+  namespaceSelector:
+    matchNames:
+    - monitoring
+  endpoints:
+  - port: metrics
+    interval: 30s
+    path: /metrics

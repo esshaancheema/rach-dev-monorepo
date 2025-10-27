@@ -1,0 +1,15 @@
+export {
+  Tabs,
+  TabsList,
+  TabsTrigger,
+  TabsContent,
+  SimpleTabs,
+  OutlineTabs,
+  PillTabs,
+  VerticalTabs,
+  tabsListVariants,
+  tabsTriggerVariants,
+  tabsContentVariants,
+  type TabItem,
+  type SimpleTabsProps,
+} from './tabs';

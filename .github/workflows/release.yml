@@ -1,0 +1,307 @@
+name: Release
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      release-type:
+        description: 'Release type'
+        required: true
+        type: choice
+        options:
+          - patch
+          - minor
+          - major
+          - prerelease
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+  packages: write
+
+jobs:
+  version-check:
+    name: Check for Version Changes
+    runs-on: ubuntu-latest
+    outputs:
+      has-changesets: ${{ steps.changesets.outputs.hasChangesets }}
+      published-packages: ${{ steps.changesets.outputs.publishedPackages }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Create Release Pull Request or Publish
+        id: changesets
+        uses: changesets/action@v1
+        with:
+          publish: npm run release
+          version: npm run version
+          commit: 'chore: version packages'
+          title: 'chore: version packages'
+          createGithubReleases: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+  create-release:
+    name: Create GitHub Release
+    needs: version-check
+    if: needs.version-check.outputs.has-changesets == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Generate changelog
+        id: changelog
+        run: |
+          # Get the latest tag
+          LATEST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
+          
+          # Generate changelog
+          if [ -z "$LATEST_TAG" ]; then
+            CHANGELOG=$(git log --pretty=format:"* %s (%h)" --no-merges)
+          else
+            CHANGELOG=$(git log ${LATEST_TAG}..HEAD --pretty=format:"* %s (%h)" --no-merges)
+          fi
+          
+          # Get version from package.json
+          VERSION=$(node -p "require('./package.json').version")
+          
+          # Create release notes
+          cat > release-notes.md << EOF
+          ## What's Changed
+          
+          ${CHANGELOG}
+          
+          ## Published Packages
+          
+          ${{ needs.version-check.outputs.published-packages }}
+          
+          **Full Changelog**: ${LATEST_TAG}...v${VERSION}
+          EOF
+          
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+
+      - name: Create GitHub Release
+        uses: actions/create-release@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: v${{ steps.changelog.outputs.version }}
+          release_name: Release v${{ steps.changelog.outputs.version }}
+          body_path: ./release-notes.md
+          draft: false
+          prerelease: ${{ contains(steps.changelog.outputs.version, '-') }}
+
+  publish-packages:
+    name: Publish Packages
+    needs: [version-check, create-release]
+    if: needs.version-check.outputs.published-packages != '[]'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build packages
+        run: npm run build:packages
+
+      - name: Publish to npm
+        run: |
+          # Configure npm
+          echo "//registry.npmjs.org/:_authToken=${{ secrets.NPM_TOKEN }}" > ~/.npmrc
+          
+          # Publish packages that have changed
+          npx changeset publish
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Publish to GitHub Packages
+        run: |
+          # Configure for GitHub Packages
+          echo "@zoptal:registry=https://npm.pkg.github.com" >> ~/.npmrc
+          echo "//npm.pkg.github.com/:_authToken=${{ secrets.GITHUB_TOKEN }}" >> ~/.npmrc
+          
+          # Publish to GitHub Packages
+          for package in packages/*; do
+            if [ -f "$package/package.json" ]; then
+              cd $package
+              npm publish --registry https://npm.pkg.github.com --access public || true
+              cd ../..
+            fi
+          done
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  docker-release:
+    name: Build and Push Docker Images
+    needs: create-release
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        service:
+          - auth-service
+          - project-service
+          - ai-service
+          - notification-service
+          - analytics-service
+          - payment-service
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_PASSWORD }}
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: |
+            zoptal/${{ matrix.service }}
+            ghcr.io/${{ github.repository_owner }}/${{ matrix.service }}
+          tags: |
+            type=ref,event=branch
+            type=ref,event=pr
+            type=semver,pattern={{version}},value=${{ needs.create-release.outputs.version }}
+            type=semver,pattern={{major}}.{{minor}}
+            type=semver,pattern={{major}}
+            type=sha
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: ./services/${{ matrix.service }}
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  update-documentation:
+    name: Update Documentation
+    needs: create-release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Generate API documentation
+        run: |
+          npm run docs:generate
+          
+          # Update version in docs
+          VERSION=${{ needs.create-release.outputs.version }}
+          sed -i "s/version: .*/version: $VERSION/" docs/config.yml
+
+      - name: Create Pull Request
+        uses: peter-evans/create-pull-request@v5
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          commit-message: 'docs: update documentation for v${{ needs.create-release.outputs.version }}'
+          title: 'docs: update documentation for v${{ needs.create-release.outputs.version }}'
+          body: |
+            This PR updates the documentation for the v${{ needs.create-release.outputs.version }} release.
+            
+            - Updated API documentation
+            - Updated version references
+            - Generated from the latest code changes
+          branch: docs/update-${{ needs.create-release.outputs.version }}
+          delete-branch: true
+
+  notify-release:
+    name: Notify Release
+    needs: [create-release, publish-packages, docker-release]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Send Slack notification
+        uses: 8398a7/action-slack@v3
+        with:
+          status: custom
+          custom_payload: |
+            {
+              username: 'GitHub Actions',
+              icon_emoji: ':rocket:',
+              attachments: [{
+                color: '${{ job.status }}' === 'success' ? 'good' : 'danger',
+                title: 'Release v${{ needs.create-release.outputs.version }}',
+                text: 'Release process completed with status: ${{ job.status }}',
+                fields: [
+                  {
+                    title: 'Version',
+                    value: '${{ needs.create-release.outputs.version }}',
+                    short: true
+                  },
+                  {
+                    title: 'Packages Published',
+                    value: '${{ needs.version-check.outputs.published-packages != "[]" && "Yes" || "No" }}',
+                    short: true
+                  }
+                ]
+              }]
+            }
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK }}
