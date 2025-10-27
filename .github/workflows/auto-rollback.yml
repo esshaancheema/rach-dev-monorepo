@@ -58,7 +58,7 @@ jobs:
       rollback-confirmed: ${{ steps.validate.outputs.rollback-confirmed }}
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Setup kubectl
         uses: azure/setup-kubectl@v3
@@ -169,7 +169,7 @@ jobs:
     environment: ${{ github.event_name == 'repository_dispatch' && github.event.client_payload.environment || inputs.environment }}-rollback
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Setup kubectl
         uses: azure/setup-kubectl@v3
