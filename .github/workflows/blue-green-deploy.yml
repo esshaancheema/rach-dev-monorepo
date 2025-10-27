@@ -46,7 +46,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Configure kubectl
-        uses: azure/setup-kubectl@v3
+        uses: azure/setup-kubectl@v4
         with:
           version: 'v1.28.0'
 
@@ -125,7 +125,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Configure kubectl
-        uses: azure/setup-kubectl@v3
+        uses: azure/setup-kubectl@v4
         with:
           version: 'v1.28.0'
 
@@ -204,7 +204,7 @@ jobs:
           node-version: '18'
 
       - name: Configure kubectl
-        uses: azure/setup-kubectl@v3
+        uses: azure/setup-kubectl@v4
         with:
           version: 'v1.28.0'
 
@@ -249,7 +249,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Configure kubectl
-        uses: azure/setup-kubectl@v3
+        uses: azure/setup-kubectl@v4
         with:
           version: 'v1.28.0'
 
@@ -309,7 +309,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Configure kubectl
-        uses: azure/setup-kubectl@v3
+        uses: azure/setup-kubectl@v4
         with:
           version: 'v1.28.0'
 
@@ -378,7 +378,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Configure kubectl
-        uses: azure/setup-kubectl@v3
+        uses: azure/setup-kubectl@v4
         with:
           version: 'v1.28.0'
 
