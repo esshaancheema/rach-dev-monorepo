@@ -1,5 +1,5 @@
 # Multi-stage Dockerfile for Auth Service
-FROM node:18-alpine AS base
+FROM node:25-alpine AS base
 
 # Install dumb-init and curl for proper signal handling and health checks
 RUN apk add --no-cache dumb-init curl
@@ -53,7 +53,7 @@ RUN pnpm run build
 RUN pnpm prune --prod
 
 # Production stage
-FROM node:18-alpine AS production
+FROM node:25-alpine AS production
 
 # Install dumb-init and curl for proper signal handling and health checks
 RUN apk add --no-cache dumb-init curl
