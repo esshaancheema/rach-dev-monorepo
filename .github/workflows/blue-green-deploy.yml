@@ -43,7 +43,7 @@ jobs:
       current_env: ${{ steps.determine_env.outputs.current_env }}
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Configure kubectl
         uses: azure/setup-kubectl@v3
@@ -93,7 +93,7 @@ jobs:
     needs: pre-deployment-checks
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -122,7 +122,7 @@ jobs:
     environment: production
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Configure kubectl
         uses: azure/setup-kubectl@v3
@@ -196,7 +196,7 @@ jobs:
     if: github.event.inputs.run_smoke_tests == 'true'
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Set up Node.js
         uses: actions/setup-node@v4
@@ -246,7 +246,7 @@ jobs:
     environment: production
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Configure kubectl
         uses: azure/setup-kubectl@v3
@@ -306,7 +306,7 @@ jobs:
     if: always()
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Configure kubectl
         uses: azure/setup-kubectl@v3
@@ -375,7 +375,7 @@ jobs:
     environment: production
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Configure kubectl
         uses: azure/setup-kubectl@v3
